@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Instance Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            ink:   { 950:'#0a0a0b', 900:'#0f0f12', 850:'#15151a', 800:'#1c1c22', 700:'#26262e' },
+            accent:{ 400:'#a78bfa', 500:'#8b5cf6', 600:'#7c3aed' },
+            ok:    '#22c55e', warn:'#f59e0b', err:'#ef4444',
+          },
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .card { @apply bg-ink-850 border border-white/5 rounded-xl; }
+    .btn  { @apply px-3 py-1.5 rounded-lg text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed; }
+    .btn-primary { @apply bg-accent-600 hover:bg-accent-500 text-white; }
+    .btn-ghost   { @apply bg-white/5 hover:bg-white/10 text-white; }
+    .btn-danger  { @apply bg-red-600/80 hover:bg-red-600 text-white; }
+    .input { @apply bg-ink-900 border border-white/10 rounded-lg px-3 py-2 text-sm text-white w-full focus:outline-none focus:border-accent-500; }
+    .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
+    .dot   { @apply inline-block w-2 h-2 rounded-full mr-1.5; }
+  </style>
+</head>
+<body class="bg-ink-950 text-gray-200 min-h-screen">
+
+  <!-- ===================== LOGIN ===================== -->
+  <div id="login-view" class="min-h-screen flex items-center justify-center px-4">
+    <div class="card w-full max-w-sm p-8">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-9 h-9 rounded-lg bg-accent-600 flex items-center justify-center font-bold text-white">W</div>
+        <div>
+          <h1 class="text-lg font-semibold text-white">Instance Manager</h1>
+          <p class="text-xs text-gray-500">Sign in to your dashboard</p>
+        </div>
+      </div>
+      <form id="login-form" class="space-y-3">
+        <input id="login-username" class="input" placeholder="Username" autocomplete="username" required />
+        <input id="login-password" type="password" class="input" placeholder="Password" autocomplete="current-password" required />
+        <button class="btn btn-primary w-full">Sign in</button>
+        <p id="login-error" class="text-xs text-red-400 hidden"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================== APP ===================== -->
+  <div id="app-view" class="hidden">
+    <header class="border-b border-white/5 sticky top-0 bg-ink-950/80 backdrop-blur z-10">
+      <div class="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-accent-600 flex items-center justify-center font-bold text-white text-sm">W</div>
+          <span class="font-semibold text-white">Instance Manager</span>
+        </div>
+        <div class="flex items-center gap-4 text-sm">
+          <span id="user-badge" class="text-gray-400"></span>
+          <button id="admin-tab-btn" class="btn btn-ghost hidden">Admin</button>
+          <button id="dashboard-tab-btn" class="btn btn-ghost hidden">Dashboard</button>
+          <button id="logout-btn" class="btn btn-ghost">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="max-w-6xl mx-auto px-6 py-8">
+
+      <!-- DASHBOARD -->
+      <section id="dashboard-section">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+          <div class="card p-5">
+            <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Slot Utilization</p>
+            <div class="flex items-end gap-2">
+              <span id="util-active" class="text-3xl font-bold text-white">0</span>
+              <span class="text-gray-500 mb-1">/ <span id="util-max">3</span></span>
+            </div>
+            <div class="mt-3 h-2 bg-ink-900 rounded-full overflow-hidden">
+              <div id="util-bar" class="h-full bg-accent-500 transition-all" style="width:0%"></div>
+            </div>
+            <p id="util-hint" class="text-xs text-gray-500 mt-2">0 slots in use</p>
+          </div>
+
+          <div class="card p-5 md:col-span-2">
+            <p class="text-xs uppercase tracking-wide text-gray-500 mb-3">Launch a Call</p>
+            <div class="flex flex-col sm:flex-row gap-3">
+              <select id="service-select" class="input flex-1"></select>
+              <input id="timeout-input" type="number" min="60" max="86400" value="3600"
+                     class="input sm:w-32" placeholder="Timeout (s)" title="Auto-stop after this many seconds" />
+              <button id="start-btn" class="btn btn-primary sm:w-32">Start Call</button>
+            </div>
+            <p id="start-error" class="text-xs text-red-400 mt-2 hidden"></p>
+            <p id="start-ok" class="text-xs text-green-400 mt-2 hidden"></p>
+          </div>
+        </div>
+
+        <div class="card overflow-hidden">
+          <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+            <h2 class="font-semibold text-white">Running Instances</h2>
+            <button id="refresh-btn" class="btn btn-ghost text-xs">Refresh</button>
+          </div>
+          <table class="w-full text-sm">
+            <thead class="text-gray-500 text-xs uppercase">
+              <tr class="border-b border-white/5">
+                <th class="text-left font-medium px-5 py-2">ID</th>
+                <th class="text-left font-medium px-5 py-2">Service</th>
+                <th class="text-left font-medium px-5 py-2">PID</th>
+                <th class="text-left font-medium px-5 py-2">Status</th>
+                <th class="text-left font-medium px-5 py-2">Started</th>
+                <th class="text-right font-medium px-5 py-2">Action</th>
+              </tr>
+            </thead>
+            <tbody id="instances-tbody"></tbody>
+          </table>
+          <div id="empty-state" class="px-5 py-10 text-center text-gray-600 text-sm hidden">
+            No active instances. Launch a call above.
+          </div>
+        </div>
+      </section>
+
+      <!-- ADMIN -->
+      <section id="admin-section" class="hidden">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+          <!-- Clients -->
+          <div class="card overflow-hidden">
+            <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+              <h2 class="font-semibold text-white">Clients</h2>
+              <button id="new-client-btn" class="btn btn-primary text-xs">+ New Client</button>
+            </div>
+            <table class="w-full text-sm">
+              <thead class="text-gray-500 text-xs uppercase">
+                <tr class="border-b border-white/5">
+                  <th class="text-left font-medium px-5 py-2">User</th>
+                  <th class="text-left font-medium px-5 py-2">Slots</th>
+                  <th class="text-left font-medium px-5 py-2">Active</th>
+                  <th class="text-right font-medium px-5 py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="clients-tbody"></tbody>
+            </table>
+          </div>
+
+          <!-- Services -->
+          <div class="card overflow-hidden">
+            <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
+              <h2 class="font-semibold text-white">Services</h2>
+              <button id="new-service-btn" class="btn btn-primary text-xs">+ New Service</button>
+            </div>
+            <table class="w-full text-sm">
+              <thead class="text-gray-500 text-xs uppercase">
+                <tr class="border-b border-white/5">
+                  <th class="text-left font-medium px-5 py-2">Name</th>
+                  <th class="text-left font-medium px-5 py-2">Binary</th>
+                  <th class="text-left font-medium px-5 py-2">Status</th>
+                  <th class="text-right font-medium px-5 py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="services-tbody"></tbody>
+            </table>
+          </div>
+
+          <!-- Live overview -->
+          <div class="card overflow-hidden lg:col-span-2">
+            <div class="px-5 py-3 border-b border-white/5">
+              <h2 class="font-semibold text-white">Live Instances (all clients)</h2>
+            </div>
+            <table class="w-full text-sm">
+              <thead class="text-gray-500 text-xs uppercase">
+                <tr class="border-b border-white/5">
+                  <th class="text-left font-medium px-5 py-2">ID</th>
+                  <th class="text-left font-medium px-5 py-2">Client</th>
+                  <th class="text-left font-medium px-5 py-2">Service</th>
+                  <th class="text-left font-medium px-5 py-2">PID</th>
+                  <th class="text-left font-medium px-5 py-2">Status</th>
+                  <th class="text-left font-medium px-5 py-2">Started</th>
+                </tr>
+              </thead>
+              <tbody id="overview-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ===================== MODAL ===================== -->
+  <div id="modal-root"></div>
+
+<script>
+/* =========================================================================
+   SPA logic — tiny vanilla controller. No framework.
+   ========================================================================= */
+const TOKEN_KEY = 'wb_token';
+
+const api = {
+  token: localStorage.getItem(TOKEN_KEY),
+  async req(path, { method = 'GET', body } = {}) {
+    const headers = { 'Content-Type': 'application/json' };
+    if (api.token) headers['Authorization'] = 'Bearer ' + api.token;
+    const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    if (res.status === 401) { api.logout(); throw new Error('Unauthorized'); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+    return data;
+  },
+  logout() {
+    api.token = null;
+    localStorage.removeItem(TOKEN_KEY);
+    showLogin();
+  }
+};
+
+const $ = (id) => document.getElementById(id);
+
+function fmtTime(s) {
+  if (!s) return '—';
+  const d = new Date(s.replace(' ', 'T') + 'Z');
+  return isNaN(d) ? s : d.toLocaleTimeString();
+}
+
+const STATUS_STYLE = {
+  running:  { c:'text-green-400',  d:'bg-green-400' },
+  pending:  { c:'text-yellow-400', d:'bg-yellow-400' },
+  stopping: { c:'text-orange-400', d:'bg-orange-400' },
+  stopped:  { c:'text-gray-400',   d:'bg-gray-400' },
+  exited:   { c:'text-gray-400',   d:'bg-gray-400' },
+  crashed:  { c:'text-red-400',    d:'bg-red-400' },
+  timeout:  { c:'text-red-400',    d:'bg-red-400' },
+};
+function statusBadge(st) {
+  const s = STATUS_STYLE[st] || { c:'text-gray-400', d:'bg-gray-400' };
+  return `<span class="badge ${s.c}"><span class="dot ${s.d}"></span>${st}</span>`;
+}
+
+/* ---------- Login ---------- */
+$('login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const err = $('login-error'); err.classList.add('hidden');
+  try {
+    const r = await api.req('/api/auth/login', {
+      method:'POST',
+      body:{ username: $('login-username').value, password: $('login-password').value }
+    });
+    api.token = r.token;
+    localStorage.setItem(TOKEN_KEY, r.token);
+    await bootApp();
+  } catch (e) {
+    err.textContent = e.message; err.classList.remove('hidden');
+  }
+});
+
+$('logout-btn').addEventListener('click', () => {
+  api.req('/api/auth/logout', { method:'POST' }).catch(()=>{}).finally(api.logout);
+});
+
+/* ---------- Boot ---------- */
+async function bootApp() {
+  try {
+    const me = await api.req('/api/auth/me');
+    $('login-view').classList.add('hidden');
+    $('app-view').classList.remove('hidden');
+    $('user-badge').textContent = `${me.username} (${me.role})`;
+    const isAdmin = me.role === 'admin';
+    $('admin-tab-btn').classList.toggle('hidden', !isAdmin);
+    showSection('dashboard');
+    await refreshDashboard();
+  } catch { api.logout(); }
+}
+
+function showLogin() {
+  $('app-view').classList.add('hidden');
+  $('login-view').classList.remove('hidden');
+}
+
+let currentSection = 'dashboard';
+function showSection(s) {
+  currentSection = s;
+  $('dashboard-section').classList.toggle('hidden', s !== 'dashboard');
+  $('admin-section').classList.toggle('hidden', s !== 'admin');
+  $('dashboard-tab-btn').classList.toggle('hidden', s === 'dashboard' || !$('dashboard-tab-btn').dataset.show);
+  $('admin-tab-btn').classList.toggle('underline', s === 'admin');
+  if (s === 'admin') refreshAdmin();
+}
+$('admin-tab-btn').addEventListener('click', () => showSection('admin'));
+$('dashboard-tab-btn').addEventListener('click', () => showSection('dashboard'));
+
+/* ---------- Dashboard ---------- */
+async function refreshDashboard() {
+  try {
+    const [util, services, instances] = await Promise.all([
+      api.req('/api/client/utilization'),
+      api.req('/api/client/services'),
+      api.req('/api/client/instances'),
+    ]);
+    // utilization
+    $('util-active').textContent = util.active;
+    $('util-max').textContent = util.max;
+    const pct = util.max ? Math.min(100, (util.active / util.max) * 100) : 0;
+    $('util-bar').style.width = pct + '%';
+    $('util-bar').className = 'h-full transition-all ' + (pct >= 100 ? 'bg-red-500' : 'bg-accent-500');
+    $('util-hint').textContent = `${util.remaining} of ${util.max} slots free`;
+
+    // service select
+    const sel = $('service-select');
+    const prev = sel.value;
+    sel.innerHTML = services.length
+      ? services.map(s => `<option value="${s.id}" ${s.enabled?'':'disabled'}>${s.name}${s.enabled?'':' (disabled)'}</option>`).join('')
+      : '<option disabled>No services configured</option>';
+    if (prev) sel.value = prev;
+
+    // instances table
+    const tb = $('instances-tbody');
+    tb.innerHTML = instances.map(i => `
+      <tr class="border-b border-white/5 hover:bg-white/[0.02]">
+        <td class="px-5 py-3 text-gray-400">#${i.id}</td>
+        <td class="px-5 py-3 text-white">${i.service_name}</td>
+        <td class="px-5 py-3 font-mono text-gray-400">${i.pid ?? '—'}</td>
+        <td class="px-5 py-3">${statusBadge(i.status)}</td>
+        <td class="px-5 py-3 text-gray-400">${fmtTime(i.started_at)}</td>
+        <td class="px-5 py-3 text-right">
+          <button class="btn btn-danger text-xs" data-stop="${i.id}"
+            ${['stopped','exited','crashed','timeout'].includes(i.status)?'disabled':''}>Stop</button>
+        </td>
+      </tr>`).join('');
+    $('empty-state').classList.toggle('hidden', instances.length > 0);
+  } catch (e) { console.error(e); }
+}
+
+$('refresh-btn').addEventListener('click', refreshDashboard);
+
+document.addEventListener('click', async (e) => {
+  const stopId = e.target.dataset.stop;
+  if (stopId) {
+    e.target.disabled = true;
+    try { await api.req('/api/client/stop/' + stopId, { method:'POST' }); }
+    catch (err) { alert(err.message); }
+    refreshDashboard();
+  }
+});
+
+$('start-btn').addEventListener('click', async () => {
+  const errEl = $('start-error'), okEl = $('start-ok');
+  errEl.classList.add('hidden'); okEl.classList.add('hidden');
+  const svcId = $('service-select').value;
+  const timeout = parseInt($('timeout-input').value) || 3600;
+  $('start-btn').disabled = true;
+  try {
+    await api.req('/api/client/start', { method:'POST', body:{ service_id: parseInt(svcId), timeout_seconds: timeout } });
+    okEl.textContent = 'Call started.'; okEl.classList.remove('hidden');
+    await refreshDashboard();
+  } catch (e) {
+    errEl.textContent = e.message; errEl.classList.remove('hidden');
+  } finally { $('start-btn').disabled = false; }
+});
+
+/* ---------- Admin ---------- */
+async function refreshAdmin() {
+  try {
+    const [clients, services, overview] = await Promise.all([
+      api.req('/api/admin/clients'),
+      api.req('/api/admin/services'),
+      api.req('/api/admin/overview'),
+    ]);
+    $('clients-tbody').innerHTML = clients.map(c => `
+      <tr class="border-b border-white/5 hover:bg-white/[0.02]">
+        <td class="px-5 py-3">
+          <div class="text-white">${c.username}</div>
+          <div class="text-xs ${c.enabled?'text-green-500':'text-gray-600'}">${c.enabled?'enabled':'disabled'}</div>
+        </td>
+        <td class="px-5 py-3 text-gray-400">${c.max_concurrent}</td>
+        <td class="px-5 py-3 text-gray-400">${c.active ?? 0}</td>
+        <td class="px-5 py-3 text-right space-x-2">
+          <button class="btn btn-ghost text-xs" data-edit-client="${c.id}"
+            data-username="${c.username}" data-max="${c.max_concurrent}" data-enabled="${c.enabled}">Edit</button>
+          <button class="btn btn-danger text-xs" data-del-client="${c.id}">Delete</button>
+        </td>
+      </tr>`).join('');
+
+    $('services-tbody').innerHTML = services.map(s => `
+      <tr class="border-b border-white/5 hover:bg-white/[0.02]">
+        <td class="px-5 py-3 text-white">${s.name}</td>
+        <td class="px-5 py-3 font-mono text-xs text-gray-400 truncate max-w-[200px]">${s.binary_path}</td>
+        <td class="px-5 py-3">${s.enabled
+          ? '<span class="badge text-green-400"><span class="dot bg-green-400"></span>enabled</span>'
+          : '<span class="badge text-gray-500"><span class="dot bg-gray-500"></span>disabled</span>'}</td>
+        <td class="px-5 py-3 text-right space-x-2">
+          <button class="btn btn-ghost text-xs" data-edit-service="${s.id}">Edit</button>
+          <button class="btn btn-danger text-xs" data-del-service="${s.id}">Delete</button>
+        </td>
+      </tr>`).join('');
+
+    $('overview-tbody').innerHTML = overview.live.length
+      ? overview.live.map(i => `
+        <tr class="border-b border-white/5">
+          <td class="px-5 py-3 text-gray-400">#${i.id}</td>
+          <td class="px-5 py-3 text-white">${i.username}</td>
+          <td class="px-5 py-3 text-gray-300">${i.service_name}</td>
+          <td class="px-5 py-3 font-mono text-gray-400">${i.pid ?? '—'}</td>
+          <td class="px-5 py-3">${statusBadge(i.status)}</td>
+          <td class="px-5 py-3 text-gray-400">${fmtTime(i.started_at)}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="6" class="px-5 py-8 text-center text-gray-600">No live instances.</td></tr>`;
+  } catch (e) { if (e.message !== 'Unauthorized') alert(e.message); }
+}
+
+document.addEventListener('click', async (e) => {
+  const t = e.target;
+  if (t.id === 'new-client-btn') clientModal();
+  if (t.id === 'new-service-btn') serviceModal();
+  if (t.dataset.editClient) clientModal({
+    id:+t.dataset.editClient, username:t.dataset.username, max:+t.dataset.max, enabled:t.dataset.enabled==='true'
+  });
+  if (t.dataset.editService) {
+    const s = (await api.req('/api/admin/services')).find(x => x.id === +t.dataset.editService);
+    serviceModal(s);
+  }
+  if (t.dataset.delClient) {
+    if (confirm('Delete client and stop their instances?')) {
+      await api.req('/api/admin/clients/' + t.dataset.delClient, { method:'DELETE' }).catch(alert);
+      refreshAdmin();
+    }
+  }
+  if (t.dataset.delService) {
+    if (confirm('Delete this service?')) {
+      await api.req('/api/admin/services/' + t.dataset.delService, { method:'DELETE' }).catch(alert);
+      refreshAdmin();
+    }
+  }
+});
+
+/* ---------- Modals ---------- */
+function openModal(html) {
+  const root = $('modal-root');
+  root.innerHTML = `<div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" id="modal-bg">
+    <div class="card w-full max-w-md p-6">${html}</div></div>`;
+  $('modal-bg').addEventListener('click', (e) => { if (e.target.id === 'modal-bg') root.innerHTML=''; });
+}
+function closeModal() { $('modal-root').innerHTML = ''; }
+
+function clientModal(c = {}) {
+  const isEdit = !!c.id;
+  openModal(`
+    <h3 class="text-white font-semibold mb-4">${isEdit?'Edit':'New'} Client</h3>
+    <form id="client-form" class="space-y-3">
+      <div><label class="text-xs text-gray-500">Username</label>
+        <input id="cf-username" class="input" value="${c.username||''}" ${isEdit?'disabled':''} required /></div>
+      <div><label class="text-xs text-gray-500">Password ${isEdit?'(leave blank to keep)':''}</label>
+        <input id="cf-password" type="password" class="input" placeholder="••••••" ${isEdit?'':'required'} minlength="6" /></div>
+      <div><label class="text-xs text-gray-500">Max concurrent slots</label>
+        <input id="cf-max" type="number" min="0" max="10" class="input" value="${c.max ?? 3}" required /></div>
+      ${isEdit ? `<label class="flex items-center gap-2 text-sm text-gray-300">
+        <input id="cf-enabled" type="checkbox" ${c.enabled?'checked':''} /> Enabled</label>` : ''}
+      <div class="flex gap-2 pt-2">
+        <button class="btn btn-primary flex-1">${isEdit?'Save':'Create'}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      </div>
+    </form>`);
+  $('client-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = {
+      max_concurrent: parseInt($('cf-max').value),
+    };
+    const pw = $('cf-password').value;
+    if (pw) payload.password = pw;
+    try {
+      if (isEdit) {
+        payload.enabled = $('cf-enabled').checked;
+        await api.req('/api/admin/clients/' + c.id, { method:'PATCH', body: payload });
+      } else {
+        payload.username = $('cf-username').value;
+        payload.password = pw;
+        await api.req('/api/admin/clients', { method:'POST', body: payload });
+      }
+      closeModal(); refreshAdmin();
+    } catch (err) { alert(err.message); }
+  });
+}
+
+function serviceModal(s = {}) {
+  const isEdit = !!s.id;
+  openModal(`
+    <h3 class="text-white font-semibold mb-4">${isEdit?'Edit':'New'} Service</h3>
+    <form id="service-form" class="space-y-3">
+      <div><label class="text-xs text-gray-500">Name</label>
+        <input id="sf-name" class="input" value="${s.name||''}" required /></div>
+      <div><label class="text-xs text-gray-500">Binary path (server-side)</label>
+        <input id="sf-binary" class="input font-mono text-xs" value="${s.binary_path||''}" placeholder="./binaries/whitelist-bypass" required /></div>
+      <div><label class="text-xs text-gray-500">Credentials / cookies</label>
+        <textarea id="sf-creds" class="input font-mono text-xs" rows="3" placeholder="session_token=...; ..." ${isEdit?'':'required'}>${s.credentials||''}</textarea>
+        ${isEdit?'<p class="text-[10px] text-gray-600">Leave unchanged to keep current value.</p>':''}</div>
+      <div><label class="text-xs text-gray-500">Extra args (optional)</label>
+        <input id="sf-extra" class="input font-mono text-xs" value="${s.extra_args||''}" placeholder="--resources ..." /></div>
+      <label class="flex items-center gap-2 text-sm text-gray-300">
+        <input id="sf-enabled" type="checkbox" ${s.enabled!==false?'checked':''} /> Enabled</label>
+      <div class="flex gap-2 pt-2">
+        <button class="btn btn-primary flex-1">${isEdit?'Save':'Create'}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      </div>
+    </form>`);
+  $('service-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = {
+      name: $('sf-name').value,
+      binary_path: $('sf-binary').value,
+      extra_args: $('sf-extra').value,
+      enabled: $('sf-enabled').checked,
+    };
+    const creds = $('sf-creds').value;
+    if (creds) payload.credentials = creds;
+    try {
+      if (isEdit) await api.req('/api/admin/services/' + s.id, { method:'PATCH', body: payload });
+      else { payload.credentials = creds; await api.req('/api/admin/services', { method:'POST', body: payload }); }
+      closeModal(); refreshAdmin();
+    } catch (err) { alert(err.message); }
+  });
+}
+window.closeModal = closeModal;
+
+/* ---------- Init ---------- */
+(async () => {
+  if (api.token) await bootApp();
+  else showLogin();
+})();
+// auto-refresh dashboard while app is open
+setInterval(() => { if (api.token && currentSection === 'dashboard') refreshDashboard(); }, 5000);
+</script>
+</body>
+</html>

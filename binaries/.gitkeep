@@ -1,0 +1,2 @@
+Drop the compiled `whitelist-bypass` binaries (or per-service binaries) into this folder.
+The Admin UI lets you point each "service" at a binary path, e.g. ./binaries/whitelist-bypass-linux-amd64.

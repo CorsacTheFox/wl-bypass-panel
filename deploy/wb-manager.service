@@ -1,0 +1,47 @@
+[Unit]
+Description=Whitelist-Bypass Instance Manager (FastAPI/uvicorn)
+Documentation=https://github.com/kulikov0/whitelist-bypass
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Dedicated, unprivileged service account (created by install.sh).
+User={{SERVICE_USER}}
+Group={{SERVICE_USER}}
+
+# Where the app lives (created by install.sh).
+WorkingDirectory={{APP_DIR}}
+
+# Load secrets/overrides from here (created by install.sh from .env.example).
+EnvironmentFile=-{{APP_DIR}}/.env
+
+# Run inside the venv. Bound to 127.0.0.1 — nginx fronts it.
+ExecStart={{APP_DIR}}/.venv/bin/python -m uvicorn main:app \
+    --host 127.0.0.1 --port 8000 --workers 1
+
+Restart=on-failure
+RestartSec=3
+
+# Hardening (uvicorn + sqlite need none of the following, so deny them).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+# Output -> journald (view with: journalctl -u wb-manager -f).
+StandardOutput=journal
+StandardError=journal
+
+# Give it a moment to clean up child processes on stop (SIGTERM grace).
+TimeoutStopSec=15
+KillMode=mixed
+KillSignal=SIGINT
+SendSIGKILL=yes
+
+[Install]
+WantedBy=multi-user.target
