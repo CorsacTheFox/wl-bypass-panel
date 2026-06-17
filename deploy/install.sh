@@ -110,8 +110,16 @@ ok "Python deps installed"
 # 4. .env + DB init
 # #############################################################################
 if [[ ! -f "$APP_DIR/.env" ]]; then
-    log "Creating $APP_DIR/.env from .env.example ..."
-    cp "$APP_DIR/.env.example" "$APP_DIR/.env"
+    # Find the template under whichever name shipped: .env.example or env.example
+    TEMPLATE=""
+    for cand in "$APP_DIR/.env.example" "$APP_DIR/env.example"; do
+        if [[ -f "$cand" ]]; then TEMPLATE="$cand"; break; fi
+    done
+    if [[ -z "$TEMPLATE" ]]; then
+        die "No env template found: need .env.example or env.example in $APP_DIR"
+    fi
+    log "Creating $APP_DIR/.env from $(basename "$TEMPLATE") ..."
+    cp "$TEMPLATE" "$APP_DIR/.env"
     # Point env paths at the install dir.
     sed -i \
         -e "s|^WB_DATA_DIR=.*|WB_DATA_DIR=$APP_DIR/data|" \
