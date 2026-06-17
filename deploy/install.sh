@@ -186,7 +186,44 @@ fi
 # 6. nginx
 # #############################################################################
 log "Installing nginx config..."
-# Shared proxy snippet first.
+
+# The $connection_upgrade variable must be defined inside the http{} block
+# of nginx.conf itself. Inject it if missing (idempotent).
+MARKER="# wb-manager: connection_upgrade map (do not remove)"
+if ! grep -qF "$MARKER" /etc/nginx/nginx.conf 2>/dev/null; then
+    log "Injecting connection_upgrade map into /etc/nginx/nginx.conf ..."
+    # Write the map block to a temp file, then use awk to splice it in
+    # before the last closing brace of nginx.conf.
+    TMPMAP=$(mktemp)
+    cat > "$TMPMAP" <<'MAPBLOCK'
+# wb-manager: connection_upgrade map (do not remove)
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+MAPBLOCK
+    awk '
+        FNR==NR { map[NR]=$0; maplines=NR; next }
+        { buf[NR]=$0 }
+        END {
+            total=NR
+            for (i=1; i<=total; i++) {
+                if (i==total && $0~/^\}/) {
+                    for (j=1; j<=maplines; j++) print map[j]
+                }
+                print buf[i]
+            }
+        }
+    ' "$TMPMAP" /etc/nginx/nginx.conf > /etc/nginx/nginx.conf.tmp
+    mv /etc/nginx/nginx.conf.tmp /etc/nginx/nginx.conf
+    rm -f "$TMPMAP"
+    ok "Injected map into nginx.conf"
+else
+    ok "connection_upgrade map already in nginx.conf"
+fi
+
+# Shared proxy snippet.
 install -m0644 "$SCRIPT_DIR/wb-proxy.snippet.conf" /etc/nginx/snippets/wb-proxy.conf
 
 NGINX_SITE="/etc/nginx/sites-available/${SERVICE_NAME}"
