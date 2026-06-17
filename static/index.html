@@ -1,536 +1,897 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Instance Manager</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <script>
     tailwind.config = {
-      darkMode: 'class',
       theme: {
         extend: {
           colors: {
-            ink:   { 950:'#0a0a0b', 900:'#0f0f12', 850:'#15151a', 800:'#1c1c22', 700:'#26262e' },
-            accent:{ 400:'#a78bfa', 500:'#8b5cf6', 600:'#7c3aed' },
-            ok:    '#22c55e', warn:'#f59e0b', err:'#ef4444',
-          },
-          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+            surface: { 950:'#08080a', 900:'#0e0e12', 800:'#14141a', 700:'#1a1a22', 600:'#22222c' },
+            violet: { 400:'#a78bfa', 500:'#8b5cf6', 600:'#7c3aed', 700:'#6d28d9' },
+          }
         }
       }
     }
   </script>
   <style>
-    body { font-family: 'Inter', system-ui, sans-serif; }
-    .card { @apply bg-ink-850 border border-white/5 rounded-xl; }
-    .btn  { @apply px-3 py-1.5 rounded-lg text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed; }
-    .btn-primary { @apply bg-accent-600 hover:bg-accent-500 text-white; }
-    .btn-ghost   { @apply bg-white/5 hover:bg-white/10 text-white; }
-    .btn-danger  { @apply bg-red-600/80 hover:bg-red-600 text-white; }
-    .input { @apply bg-ink-900 border border-white/10 rounded-lg px-3 py-2 text-sm text-white w-full focus:outline-none focus:border-accent-500; }
-    .badge { @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium; }
-    .dot   { @apply inline-block w-2 h-2 rounded-full mr-1.5; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    /* === Components (real CSS, no @apply) === */
+    .card {
+      background: #14141a;
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+    }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 500;
+      transition: all 0.15s ease; cursor: pointer; border: none; outline: none;
+      white-space: nowrap;
+    }
+    .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-primary { background: #7c3aed; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #6d28d9; }
+    .btn-ghost { background: rgba(255,255,255,0.06); color: #d1d5db; }
+    .btn-ghost:hover:not(:disabled) { background: rgba(255,255,255,0.10); }
+    .btn-danger { background: rgba(220,38,38,0.7); color: #fff; }
+    .btn-danger:hover:not(:disabled) { background: #dc2626; }
+    .btn-success { background: rgba(22,163,74,0.7); color: #fff; }
+    .btn-success:hover:not(:disabled) { background: #16a34a; }
+    .input-field {
+      width: 100%; padding: 10px 14px; border-radius: 8px; font-size: 13px;
+      background: #0e0e12; border: 1px solid rgba(255,255,255,0.08);
+      color: #f3f4f6; outline: none; transition: border-color 0.15s;
+      font-family: inherit;
+    }
+    .input-field:focus { border-color: #7c3aed; }
+    .input-field::placeholder { color: #4b5563; }
+    select.input-field { appearance: none; cursor: pointer;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%239ca3af' viewBox='0 0 16 16'%3E%3Cpath d='M1.5 5.5l6.5 6 6.5-6'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center;
+      padding-right: 32px;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 2px 10px; border-radius: 9999px; font-size: 11px; font-weight: 500;
+    }
+    .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+    /* === Animations === */
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes slideDown { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes pulse-dot { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+    .anim-fade { animation: fadeIn 0.25s ease-out; }
+    .anim-slide { animation: slideDown 0.3s ease-out; }
+    .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
+    /* === Table rows === */
+    .tbl-row { border-bottom: 1px solid rgba(255,255,255,0.04); transition: background 0.1s; }
+    .tbl-row:hover { background: rgba(255,255,255,0.02); }
+    /* === Notification toast === */
+    .toast {
+      position: fixed; top: 20px; right: 20px; z-index: 100;
+      padding: 12px 20px; border-radius: 10px; font-size: 13px; font-weight: 500;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+      animation: slideDown 0.25s ease-out;
+      max-width: 360px;
+    }
+    .toast-ok  { background: #166534; color: #bbf7d0; }
+    .toast-err { background: #991b1b; color: #fecaca; }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
   </style>
 </head>
-<body class="bg-ink-950 text-gray-200 min-h-screen">
 
-  <!-- ===================== LOGIN ===================== -->
-  <div id="login-view" class="min-h-screen flex items-center justify-center px-4">
-    <div class="card w-full max-w-sm p-8">
-      <div class="flex items-center gap-3 mb-6">
-        <div class="w-9 h-9 rounded-lg bg-accent-600 flex items-center justify-center font-bold text-white">W</div>
-        <div>
-          <h1 class="text-lg font-semibold text-white">Instance Manager</h1>
-          <p class="text-xs text-gray-500">Sign in to your dashboard</p>
-        </div>
+<body class="bg-surface-950 text-gray-300 min-h-screen">
+
+<!-- =====================================================================
+     TOAST CONTAINER
+     ===================================================================== -->
+<div id="toast-container"></div>
+
+<!-- =====================================================================
+     LOGIN PAGE
+     ===================================================================== -->
+<div id="page-login" class="min-h-screen flex items-center justify-center px-4">
+  <div class="w-full max-w-sm anim-fade">
+    <!-- Logo -->
+    <div class="flex items-center justify-center gap-3 mb-8">
+      <div class="w-11 h-11 rounded-xl bg-violet-600 flex items-center justify-center shadow-lg shadow-violet-600/20">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728M9.172 15.828a4 4 0 010-5.656m5.656 0a4 4 0 010 5.656"/>
+        </svg>
       </div>
-      <form id="login-form" class="space-y-3">
-        <input id="login-username" class="input" placeholder="Username" autocomplete="username" required />
-        <input id="login-password" type="password" class="input" placeholder="Password" autocomplete="current-password" required />
-        <button class="btn btn-primary w-full">Sign in</button>
-        <p id="login-error" class="text-xs text-red-400 hidden"></p>
+    </div>
+    <div class="card p-7">
+      <h1 class="text-white text-xl font-semibold text-center mb-1">Welcome back</h1>
+      <p class="text-gray-500 text-sm text-center mb-6">Sign in to your dashboard</p>
+
+      <form id="form-login" class="space-y-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1.5 font-medium">Username</label>
+          <input id="inp-user" class="input-field" placeholder="Enter username" autocomplete="username" required />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1.5 font-medium">Password</label>
+          <input id="inp-pass" type="password" class="input-field" placeholder="Enter password" autocomplete="current-password" required />
+        </div>
+        <div id="login-error" class="hidden text-red-400 text-xs bg-red-400/10 rounded-lg px-3 py-2"></div>
+        <button id="btn-login" type="submit" class="btn btn-primary w-full py-2.5">
+          Sign in
+        </button>
       </form>
     </div>
+    <p class="text-gray-600 text-xs text-center mt-4">Instance Manager v1.0</p>
   </div>
+</div>
 
-  <!-- ===================== APP ===================== -->
-  <div id="app-view" class="hidden">
-    <header class="border-b border-white/5 sticky top-0 bg-ink-950/80 backdrop-blur z-10">
-      <div class="max-w-6xl mx-auto px-6 py-3 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="w-8 h-8 rounded-lg bg-accent-600 flex items-center justify-center font-bold text-white text-sm">W</div>
-          <span class="font-semibold text-white">Instance Manager</span>
+<!-- =====================================================================
+     APP SHELL (hidden until login)
+     ===================================================================== -->
+<div id="page-app" class="hidden">
+
+  <!-- ---- HEADER ---- -->
+  <header class="sticky top-0 z-30 border-b border-white/[0.06] bg-surface-950/80 backdrop-blur-xl">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between">
+      <!-- Left: logo + nav tabs -->
+      <div class="flex items-center gap-6">
+        <div class="flex items-center gap-2.5">
+          <div class="w-8 h-8 rounded-lg bg-violet-600 flex items-center justify-center">
+            <svg class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5.636 18.364a9 9 0 010-12.728m12.728 0a9 9 0 010 12.728"/>
+            </svg>
+          </div>
+          <span class="text-white font-semibold text-sm hidden sm:inline">Instance Manager</span>
         </div>
-        <div class="flex items-center gap-4 text-sm">
-          <span id="user-badge" class="text-gray-400"></span>
-          <button id="admin-tab-btn" class="btn btn-ghost hidden">Admin</button>
-          <button id="dashboard-tab-btn" class="btn btn-ghost hidden">Dashboard</button>
-          <button id="logout-btn" class="btn btn-ghost">Logout</button>
+        <nav id="nav-tabs" class="flex items-center gap-1"></nav>
+      </div>
+      <!-- Right: user + logout -->
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2 text-sm">
+          <div class="w-7 h-7 rounded-full bg-violet-600/20 flex items-center justify-center text-violet-400 text-xs font-bold" id="user-avatar"></div>
+          <span id="user-info" class="text-gray-400 text-sm"></span>
+        </div>
+        <button id="btn-logout" class="btn btn-ghost text-xs py-1.5 px-3">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H6a2 2 0 01-2-2V7a2 2 0 012-2h5a2 2 0 012 2v1"/></svg>
+          Logout
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ---- MAIN CONTENT ---- -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+
+    <!-- ====== DASHBOARD SECTION ====== -->
+    <section id="sec-dashboard" class="hidden anim-fade space-y-5">
+      <!-- Top row: stats + launch -->
+      <div class="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <!-- Utilization card -->
+        <div class="card p-5 lg:col-span-2">
+          <div class="flex items-center justify-between mb-4">
+            <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Slot Utilization</span>
+            <span id="util-pct" class="text-xs font-bold text-violet-400">0%</span>
+          </div>
+          <div class="flex items-baseline gap-1 mb-3">
+            <span id="util-active" class="text-4xl font-bold text-white">0</span>
+            <span class="text-gray-500 text-lg">/ <span id="util-max">3</span></span>
+          </div>
+          <div class="h-2 bg-surface-800 rounded-full overflow-hidden mb-2">
+            <div id="util-bar" class="h-full rounded-full bg-violet-500 transition-all duration-500" style="width:0%"></div>
+          </div>
+          <p id="util-hint" class="text-xs text-gray-500">No active instances</p>
+        </div>
+
+        <!-- Launch card -->
+        <div class="card p-5 lg:col-span-3">
+          <span class="text-xs font-medium text-gray-500 uppercase tracking-wider">Launch New Call</span>
+          <div class="mt-4 flex flex-col sm:flex-row gap-3">
+            <select id="sel-service" class="input-field flex-1">
+              <option disabled selected>Loading services...</option>
+            </select>
+            <input id="inp-timeout" type="number" min="60" max="86400" value="3600"
+                   class="input-field sm:w-28" title="Auto-stop after N seconds" />
+            <button id="btn-start" class="btn btn-success px-5">
+              <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+              Start
+            </button>
+          </div>
+          <div id="launch-msg" class="hidden mt-3 text-xs rounded-lg px-3 py-2"></div>
         </div>
       </div>
-    </header>
 
-    <main class="max-w-6xl mx-auto px-6 py-8">
-
-      <!-- DASHBOARD -->
-      <section id="dashboard-section">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div class="card p-5">
-            <p class="text-xs uppercase tracking-wide text-gray-500 mb-2">Slot Utilization</p>
-            <div class="flex items-end gap-2">
-              <span id="util-active" class="text-3xl font-bold text-white">0</span>
-              <span class="text-gray-500 mb-1">/ <span id="util-max">3</span></span>
-            </div>
-            <div class="mt-3 h-2 bg-ink-900 rounded-full overflow-hidden">
-              <div id="util-bar" class="h-full bg-accent-500 transition-all" style="width:0%"></div>
-            </div>
-            <p id="util-hint" class="text-xs text-gray-500 mt-2">0 slots in use</p>
-          </div>
-
-          <div class="card p-5 md:col-span-2">
-            <p class="text-xs uppercase tracking-wide text-gray-500 mb-3">Launch a Call</p>
-            <div class="flex flex-col sm:flex-row gap-3">
-              <select id="service-select" class="input flex-1"></select>
-              <input id="timeout-input" type="number" min="60" max="86400" value="3600"
-                     class="input sm:w-32" placeholder="Timeout (s)" title="Auto-stop after this many seconds" />
-              <button id="start-btn" class="btn btn-primary sm:w-32">Start Call</button>
-            </div>
-            <p id="start-error" class="text-xs text-red-400 mt-2 hidden"></p>
-            <p id="start-ok" class="text-xs text-green-400 mt-2 hidden"></p>
-          </div>
+      <!-- Instances table -->
+      <div class="card overflow-hidden">
+        <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
+          <h2 class="text-white font-semibold text-sm">Active Instances</h2>
+          <button id="btn-refresh" class="btn btn-ghost text-xs py-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            Refresh
+          </button>
         </div>
-
-        <div class="card overflow-hidden">
-          <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
-            <h2 class="font-semibold text-white">Running Instances</h2>
-            <button id="refresh-btn" class="btn btn-ghost text-xs">Refresh</button>
-          </div>
-          <table class="w-full text-sm">
-            <thead class="text-gray-500 text-xs uppercase">
-              <tr class="border-b border-white/5">
-                <th class="text-left font-medium px-5 py-2">ID</th>
-                <th class="text-left font-medium px-5 py-2">Service</th>
-                <th class="text-left font-medium px-5 py-2">PID</th>
-                <th class="text-left font-medium px-5 py-2">Status</th>
-                <th class="text-left font-medium px-5 py-2">Started</th>
-                <th class="text-right font-medium px-5 py-2">Action</th>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm min-w-[600px]">
+            <thead>
+              <tr class="text-gray-500 text-[11px] uppercase tracking-wider">
+                <th class="text-left font-medium px-5 py-2.5">ID</th>
+                <th class="text-left font-medium px-5 py-2.5">Service</th>
+                <th class="text-left font-medium px-5 py-2.5">PID</th>
+                <th class="text-left font-medium px-5 py-2.5">Status</th>
+                <th class="text-left font-medium px-5 py-2.5">Started</th>
+                <th class="text-right font-medium px-5 py-2.5">Action</th>
               </tr>
             </thead>
-            <tbody id="instances-tbody"></tbody>
+            <tbody id="tbody-instances"></tbody>
           </table>
-          <div id="empty-state" class="px-5 py-10 text-center text-gray-600 text-sm hidden">
-            No active instances. Launch a call above.
-          </div>
         </div>
-      </section>
+        <div id="empty-instances" class="hidden px-5 py-12 text-center">
+          <div class="text-gray-600 text-sm">No active instances</div>
+          <div class="text-gray-700 text-xs mt-1">Launch a call above to get started</div>
+        </div>
+      </div>
+    </section>
 
-      <!-- ADMIN -->
-      <section id="admin-section" class="hidden">
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- ====== ADMIN SECTION ====== -->
+    <section id="sec-admin" class="hidden anim-fade space-y-5">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
-          <!-- Clients -->
-          <div class="card overflow-hidden">
-            <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
-              <h2 class="font-semibold text-white">Clients</h2>
-              <button id="new-client-btn" class="btn btn-primary text-xs">+ New Client</button>
-            </div>
-            <table class="w-full text-sm">
-              <thead class="text-gray-500 text-xs uppercase">
-                <tr class="border-b border-white/5">
-                  <th class="text-left font-medium px-5 py-2">User</th>
-                  <th class="text-left font-medium px-5 py-2">Slots</th>
-                  <th class="text-left font-medium px-5 py-2">Active</th>
-                  <th class="text-right font-medium px-5 py-2">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="clients-tbody"></tbody>
-            </table>
+        <!-- Clients -->
+        <div class="card overflow-hidden">
+          <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
+            <h2 class="text-white font-semibold text-sm">Clients</h2>
+            <button id="btn-new-client" class="btn btn-primary text-xs py-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+              New Client
+            </button>
           </div>
-
-          <!-- Services -->
-          <div class="card overflow-hidden">
-            <div class="px-5 py-3 border-b border-white/5 flex items-center justify-between">
-              <h2 class="font-semibold text-white">Services</h2>
-              <button id="new-service-btn" class="btn btn-primary text-xs">+ New Service</button>
-            </div>
+          <div class="overflow-x-auto">
             <table class="w-full text-sm">
-              <thead class="text-gray-500 text-xs uppercase">
-                <tr class="border-b border-white/5">
-                  <th class="text-left font-medium px-5 py-2">Name</th>
-                  <th class="text-left font-medium px-5 py-2">Binary</th>
-                  <th class="text-left font-medium px-5 py-2">Status</th>
-                  <th class="text-right font-medium px-5 py-2">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="services-tbody"></tbody>
-            </table>
-          </div>
-
-          <!-- Live overview -->
-          <div class="card overflow-hidden lg:col-span-2">
-            <div class="px-5 py-3 border-b border-white/5">
-              <h2 class="font-semibold text-white">Live Instances (all clients)</h2>
-            </div>
-            <table class="w-full text-sm">
-              <thead class="text-gray-500 text-xs uppercase">
-                <tr class="border-b border-white/5">
-                  <th class="text-left font-medium px-5 py-2">ID</th>
-                  <th class="text-left font-medium px-5 py-2">Client</th>
-                  <th class="text-left font-medium px-5 py-2">Service</th>
-                  <th class="text-left font-medium px-5 py-2">PID</th>
-                  <th class="text-left font-medium px-5 py-2">Status</th>
-                  <th class="text-left font-medium px-5 py-2">Started</th>
-                </tr>
-              </thead>
-              <tbody id="overview-tbody"></tbody>
+              <thead><tr class="text-gray-500 text-[11px] uppercase tracking-wider">
+                <th class="text-left font-medium px-5 py-2.5">Username</th>
+                <th class="text-left font-medium px-5 py-2.5">Slots</th>
+                <th class="text-left font-medium px-5 py-2.5">Active</th>
+                <th class="text-left font-medium px-5 py-2.5">Status</th>
+                <th class="text-right font-medium px-5 py-2.5">Actions</th>
+              </tr></thead>
+              <tbody id="tbody-clients"></tbody>
             </table>
           </div>
         </div>
-      </section>
 
-    </main>
-  </div>
+        <!-- Services -->
+        <div class="card overflow-hidden">
+          <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
+            <h2 class="text-white font-semibold text-sm">Services</h2>
+            <button id="btn-new-service" class="btn btn-primary text-xs py-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+              New Service
+            </button>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-gray-500 text-[11px] uppercase tracking-wider">
+                <th class="text-left font-medium px-5 py-2.5">Name</th>
+                <th class="text-left font-medium px-5 py-2.5">Binary</th>
+                <th class="text-left font-medium px-5 py-2.5">Status</th>
+                <th class="text-right font-medium px-5 py-2.5">Actions</th>
+              </tr></thead>
+              <tbody id="tbody-services"></tbody>
+            </table>
+          </div>
+        </div>
 
-  <!-- ===================== MODAL ===================== -->
-  <div id="modal-root"></div>
+        <!-- Live overview -->
+        <div class="card overflow-hidden lg:col-span-2">
+          <div class="px-5 py-3.5 border-b border-white/[0.04]">
+            <h2 class="text-white font-semibold text-sm">All Live Instances</h2>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm min-w-[600px]">
+              <thead><tr class="text-gray-500 text-[11px] uppercase tracking-wider">
+                <th class="text-left font-medium px-5 py-2.5">ID</th>
+                <th class="text-left font-medium px-5 py-2.5">Client</th>
+                <th class="text-left font-medium px-5 py-2.5">Service</th>
+                <th class="text-left font-medium px-5 py-2.5">PID</th>
+                <th class="text-left font-medium px-5 py-2.5">Status</th>
+                <th class="text-left font-medium px-5 py-2.5">Started</th>
+              </tr></thead>
+              <tbody id="tbody-overview"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- =====================================================================
+     MODAL OVERLAY
+     ===================================================================== -->
+<div id="modal-overlay" class="hidden fixed inset-0 z-50 flex items-center justify-center px-4">
+  <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" id="modal-backdrop"></div>
+  <div class="relative card w-full max-w-md p-6 anim-fade z-10" id="modal-content"></div>
+</div>
 
 <script>
 /* =========================================================================
-   SPA logic — tiny vanilla controller. No framework.
+   APPLICATION STATE & HELPERS
    ========================================================================= */
 const TOKEN_KEY = 'wb_token';
+let currentUser = null;   // { id, username, role, max_concurrent }
+let currentTab = 'dashboard';
 
 const api = {
-  token: localStorage.getItem(TOKEN_KEY),
-  async req(path, { method = 'GET', body } = {}) {
+  token: localStorage.getItem(TOKEN_KEY) || null,
+
+  async request(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json' };
-    if (api.token) headers['Authorization'] = 'Bearer ' + api.token;
-    const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-    if (res.status === 401) { api.logout(); throw new Error('Unauthorized'); }
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+    if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
+    const res = await fetch(path, {
+      method: opts.method || 'GET',
+      headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+    if (res.status === 401) { this.logout(); throw new Error('Session expired'); }
+    let data;
+    try { data = await res.json(); } catch { data = {}; }
+    if (!res.ok) throw new Error(data.detail || 'Request failed (' + res.status + ')');
     return data;
   },
+
+  async get(path)    { return this.request(path); },
+  async post(path, body) { return this.request(path, { method: 'POST', body }); },
+  async patch(path, body) { return this.request(path, { method: 'PATCH', body }); },
+  async del(path)   { return this.request(path, { method: 'DELETE' }); },
+
   logout() {
-    api.token = null;
+    this.token = null;
     localStorage.removeItem(TOKEN_KEY);
-    showLogin();
+    currentUser = null;
+    currentTab = 'dashboard';
+    renderLogin();
   }
 };
 
-const $ = (id) => document.getElementById(id);
+/* --- DOM helpers --- */
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+function el(tag, attrs = {}, ...children) {
+  const e = document.createElement(tag);
+  Object.entries(attrs).forEach(([k,v]) => {
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2).toLowerCase(), v);
+    else e.setAttribute(k, v);
+  });
+  children.forEach(c => { if (typeof c === 'string') e.appendChild(document.createTextNode(c)); else if (c) e.appendChild(c); });
+  return e;
+}
+
+/* --- Toast notifications --- */
+function toast(msg, type = 'ok') {
+  const container = $('#toast-container');
+  const t = el('div', { class: 'toast toast-' + type, text: msg });
+  container.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 3500);
+}
+
+/* --- Status badge --- */
+function statusBadge(status) {
+  const map = {
+    running:  { color: '#22c55e', bg: 'rgba(34,197,94,0.12)', label: status, pulse: true },
+    pending:  { color: '#eab308', bg: 'rgba(234,179,8,0.12)',  label: status, pulse: true },
+    stopping: { color: '#f97316', bg: 'rgba(249,115,22,0.12)', label: status, pulse: true },
+    stopped:  { color: '#6b7280', bg: 'rgba(107,114,128,0.1)', label: status },
+    exited:   { color: '#6b7280', bg: 'rgba(107,114,128,0.1)', label: status },
+    crashed:  { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',  label: status },
+    timeout:  { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',  label: status },
+  };
+  const s = map[status] || { color: '#6b7280', bg: 'rgba(107,114,128,0.1)', label: status };
+  return `<span class="badge" style="color:${s.color};background:${s.bg}">
+    <span class="dot ${s.pulse ? 'pulse-dot' : ''}" style="background:${s.color}"></span>
+    ${s.label}</span>`;
+}
 
 function fmtTime(s) {
-  if (!s) return '—';
-  const d = new Date(s.replace(' ', 'T') + 'Z');
-  return isNaN(d) ? s : d.toLocaleTimeString();
+  if (!s) return '\u2014';
+  const d = new Date((s.includes(' ') ? s.replace(' ', 'T') : s) + 'Z');
+  return isNaN(d) ? s : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-const STATUS_STYLE = {
-  running:  { c:'text-green-400',  d:'bg-green-400' },
-  pending:  { c:'text-yellow-400', d:'bg-yellow-400' },
-  stopping: { c:'text-orange-400', d:'bg-orange-400' },
-  stopped:  { c:'text-gray-400',   d:'bg-gray-400' },
-  exited:   { c:'text-gray-400',   d:'bg-gray-400' },
-  crashed:  { c:'text-red-400',    d:'bg-red-400' },
-  timeout:  { c:'text-red-400',    d:'bg-red-400' },
-};
-function statusBadge(st) {
-  const s = STATUS_STYLE[st] || { c:'text-gray-400', d:'bg-gray-400' };
-  return `<span class="badge ${s.c}"><span class="dot ${s.d}"></span>${st}</span>`;
+function isTerminal(status) {
+  return ['stopped','exited','crashed','timeout'].includes(status);
 }
 
-/* ---------- Login ---------- */
-$('login-form').addEventListener('submit', async (e) => {
+/* =========================================================================
+   AUTH: LOGIN
+   ========================================================================= */
+function renderLogin() {
+  $('#page-login').classList.remove('hidden');
+  $('#page-app').classList.add('hidden');
+  $('#inp-user').value = '';
+  $('#inp-pass').value = '';
+  $('#login-error').classList.add('hidden');
+}
+
+$('#form-login').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const err = $('login-error'); err.classList.add('hidden');
+  const errEl = $('#login-error');
+  const btnEl = $('#btn-login');
+  errEl.classList.add('hidden');
+  btnEl.disabled = true;
+  btnEl.textContent = 'Signing in\u2026';
   try {
-    const r = await api.req('/api/auth/login', {
-      method:'POST',
-      body:{ username: $('login-username').value, password: $('login-password').value }
+    const r = await api.post('/api/auth/login', {
+      username: $('#inp-user').value.trim(),
+      password: $('#inp-pass').value,
     });
     api.token = r.token;
     localStorage.setItem(TOKEN_KEY, r.token);
-    await bootApp();
-  } catch (e) {
-    err.textContent = e.message; err.classList.remove('hidden');
+    toast('Signed in as ' + r.username);
+    await bootstrap();
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btnEl.disabled = false;
+    btnEl.textContent = 'Sign in';
   }
 });
 
-$('logout-btn').addEventListener('click', () => {
-  api.req('/api/auth/logout', { method:'POST' }).catch(()=>{}).finally(api.logout);
+$('#btn-logout').addEventListener('click', () => {
+  api.post('/api/auth/logout').catch(() => {}).finally(() => api.logout());
 });
 
-/* ---------- Boot ---------- */
-async function bootApp() {
+/* =========================================================================
+   BOOTSTRAP: after successful login
+   ========================================================================= */
+async function bootstrap() {
   try {
-    const me = await api.req('/api/auth/me');
-    $('login-view').classList.add('hidden');
-    $('app-view').classList.remove('hidden');
-    $('user-badge').textContent = `${me.username} (${me.role})`;
-    const isAdmin = me.role === 'admin';
-    $('admin-tab-btn').classList.toggle('hidden', !isAdmin);
-    showSection('dashboard');
-    await refreshDashboard();
-  } catch { api.logout(); }
+    currentUser = await api.get('/api/auth/me');
+  } catch { api.logout(); return; }
+
+  $('#page-login').classList.add('hidden');
+  $('#page-app').classList.remove('hidden');
+  $('#user-avatar').textContent = currentUser.username[0].toUpperCase();
+  $('#user-info').textContent = currentUser.username;
+
+  buildNav();
+  switchTab(currentTab);
 }
 
-function showLogin() {
-  $('app-view').classList.add('hidden');
-  $('login-view').classList.remove('hidden');
+/* --- Navigation tabs --- */
+function buildNav() {
+  const nav = $('#nav-tabs');
+  nav.innerHTML = '';
+
+  // Dashboard tab — always shown
+  const dashTab = el('button', {
+    class: 'btn btn-ghost text-xs py-1.5 px-3 border-b-2 transition-colors',
+    text: 'Dashboard',
+    'data-tab': 'dashboard',
+    onClick: () => switchTab('dashboard'),
+  });
+  nav.appendChild(dashTab);
+
+  // Admin tab — admins only
+  if (currentUser.role === 'admin') {
+    const adminTab = el('button', {
+      class: 'btn btn-ghost text-xs py-1.5 px-3 border-b-2 transition-colors',
+      text: 'Admin Panel',
+      'data-tab': 'admin',
+      onClick: () => switchTab('admin'),
+    });
+    nav.appendChild(adminTab);
+  }
 }
 
-let currentSection = 'dashboard';
-function showSection(s) {
-  currentSection = s;
-  $('dashboard-section').classList.toggle('hidden', s !== 'dashboard');
-  $('admin-section').classList.toggle('hidden', s !== 'admin');
-  $('dashboard-tab-btn').classList.toggle('hidden', s === 'dashboard' || !$('dashboard-tab-btn').dataset.show);
-  $('admin-tab-btn').classList.toggle('underline', s === 'admin');
-  if (s === 'admin') refreshAdmin();
-}
-$('admin-tab-btn').addEventListener('click', () => showSection('admin'));
-$('dashboard-tab-btn').addEventListener('click', () => showSection('dashboard'));
+function switchTab(tab) {
+  currentTab = tab;
+  $('#sec-dashboard').classList.toggle('hidden', tab !== 'dashboard');
+  $('#sec-admin').classList.toggle('hidden', tab !== 'admin');
 
-/* ---------- Dashboard ---------- */
+  // Highlight active tab
+  $$('[data-tab]').forEach(b => {
+    if (b.dataset.tab === tab) {
+      b.classList.add('text-violet-400', 'border-violet-400');
+      b.classList.remove('text-gray-400', 'border-transparent');
+    } else {
+      b.classList.remove('text-violet-400', 'border-violet-400');
+      b.classList.add('text-gray-400', 'border-transparent');
+    }
+  });
+
+  if (tab === 'dashboard') refreshDashboard();
+  if (tab === 'admin') refreshAdmin();
+}
+
+/* =========================================================================
+   DASHBOARD
+   ========================================================================= */
 async function refreshDashboard() {
   try {
     const [util, services, instances] = await Promise.all([
-      api.req('/api/client/utilization'),
-      api.req('/api/client/services'),
-      api.req('/api/client/instances'),
+      api.get('/api/client/utilization'),
+      api.get('/api/client/services'),
+      api.get('/api/client/instances'),
     ]);
-    // utilization
-    $('util-active').textContent = util.active;
-    $('util-max').textContent = util.max;
-    const pct = util.max ? Math.min(100, (util.active / util.max) * 100) : 0;
-    $('util-bar').style.width = pct + '%';
-    $('util-bar').className = 'h-full transition-all ' + (pct >= 100 ? 'bg-red-500' : 'bg-accent-500');
-    $('util-hint').textContent = `${util.remaining} of ${util.max} slots free`;
 
-    // service select
-    const sel = $('service-select');
+    // --- Utilization ---
+    $('#util-active').textContent = util.active;
+    $('#util-max').textContent = util.max;
+    const pct = util.max > 0 ? Math.min(100, Math.round((util.active / util.max) * 100)) : 0;
+    $('#util-pct').textContent = pct + '%';
+    const bar = $('#util-bar');
+    bar.style.width = pct + '%';
+    bar.style.background = pct >= 100 ? '#ef4444' : '#8b5cf6';
+    $('#util-hint').textContent = util.remaining > 0
+      ? util.remaining + ' of ' + util.max + ' slots available'
+      : 'All slots in use';
+
+    // --- Service select ---
+    const sel = $('#sel-service');
     const prev = sel.value;
-    sel.innerHTML = services.length
-      ? services.map(s => `<option value="${s.id}" ${s.enabled?'':'disabled'}>${s.name}${s.enabled?'':' (disabled)'}</option>`).join('')
-      : '<option disabled>No services configured</option>';
-    if (prev) sel.value = prev;
+    if (services.length === 0) {
+      sel.innerHTML = '<option disabled>No services configured</option>';
+    } else {
+      sel.innerHTML = '<option value="" disabled>Select a service\u2026</option>' +
+        services.map(s =>
+          `<option value="${s.id}" ${s.enabled ? '' : 'disabled'}>${s.name}${s.enabled ? '' : ' (disabled)'}</option>`
+        ).join('');
+      if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
+    }
 
-    // instances table
-    const tb = $('instances-tbody');
-    tb.innerHTML = instances.map(i => `
-      <tr class="border-b border-white/5 hover:bg-white/[0.02]">
-        <td class="px-5 py-3 text-gray-400">#${i.id}</td>
-        <td class="px-5 py-3 text-white">${i.service_name}</td>
-        <td class="px-5 py-3 font-mono text-gray-400">${i.pid ?? '—'}</td>
-        <td class="px-5 py-3">${statusBadge(i.status)}</td>
-        <td class="px-5 py-3 text-gray-400">${fmtTime(i.started_at)}</td>
-        <td class="px-5 py-3 text-right">
-          <button class="btn btn-danger text-xs" data-stop="${i.id}"
-            ${['stopped','exited','crashed','timeout'].includes(i.status)?'disabled':''}>Stop</button>
-        </td>
-      </tr>`).join('');
-    $('empty-state').classList.toggle('hidden', instances.length > 0);
-  } catch (e) { console.error(e); }
+    // --- Instances ---
+    const tbody = $('#tbody-instances');
+    if (instances.length === 0) {
+      tbody.innerHTML = '';
+      $('#empty-instances').classList.remove('hidden');
+    } else {
+      $('#empty-instances').classList.add('hidden');
+      tbody.innerHTML = instances.map(i => `
+        <tr class="tbl-row">
+          <td class="px-5 py-3 text-gray-500 font-mono text-xs">#${i.id}</td>
+          <td class="px-5 py-3 text-white font-medium">${esc(i.service_name)}</td>
+          <td class="px-5 py-3 font-mono text-gray-400 text-xs">${i.pid ?? '\u2014'}</td>
+          <td class="px-5 py-3">${statusBadge(i.status)}</td>
+          <td class="px-5 py-3 text-gray-400 text-xs">${fmtTime(i.started_at)}</td>
+          <td class="px-5 py-3 text-right">
+            ${isTerminal(i.status)
+              ? '<span class="text-gray-600 text-xs">ended</span>'
+              : `<button class="btn btn-danger text-xs py-1 px-3" data-action="stop" data-id="${i.id}">Stop</button>`
+            }
+          </td>
+        </tr>`).join('');
+    }
+
+    // Clear any stale messages
+    hideLaunchMsg();
+
+  } catch (err) {
+    if (err.message !== 'Session expired') console.error('Dashboard refresh error:', err);
+  }
 }
 
-$('refresh-btn').addEventListener('click', refreshDashboard);
+function hideLaunchMsg() {
+  const m = $('#launch-msg');
+  m.classList.add('hidden');
+}
+
+function showLaunchMsg(msg, ok) {
+  const m = $('#launch-msg');
+  m.classList.remove('hidden');
+  m.textContent = msg;
+  m.className = 'mt-3 text-xs rounded-lg px-3 py-2 ' +
+    (ok ? 'text-green-400 bg-green-400/10' : 'text-red-400 bg-red-400/10');
+}
+
+/* --- Start call --- */
+$('#btn-start').addEventListener('click', async () => {
+  const svcId = parseInt($('#sel-service').value);
+  const timeout = parseInt($('#inp-timeout').value) || 3600;
+  const btn = $('#btn-start');
+  if (!svcId) { showLaunchMsg('Select a service first', false); return; }
+  btn.disabled = true;
+  try {
+    await api.post('/api/client/start', { service_id: svcId, timeout_seconds: timeout });
+    showLaunchMsg('Call started successfully', true);
+    toast('Instance launched');
+    refreshDashboard();
+  } catch (err) {
+    showLaunchMsg(err.message, false);
+  } finally { btn.disabled = false; }
+});
+
+/* --- Stop instance (delegated) --- */
+$('#btn-refresh').addEventListener('click', refreshDashboard);
 
 document.addEventListener('click', async (e) => {
-  const stopId = e.target.dataset.stop;
-  if (stopId) {
-    e.target.disabled = true;
-    try { await api.req('/api/client/stop/' + stopId, { method:'POST' }); }
-    catch (err) { alert(err.message); }
+  const btn = e.target.closest('[data-action="stop"]');
+  if (!btn) return;
+  const id = btn.dataset.id;
+  btn.disabled = true;
+  btn.textContent = 'Stopping\u2026';
+  try {
+    await api.post('/api/client/stop/' + id);
+    toast('Instance #' + id + ' stopped');
     refreshDashboard();
+  } catch (err) {
+    toast(err.message, 'err');
+    btn.disabled = false;
+    btn.textContent = 'Stop';
   }
 });
 
-$('start-btn').addEventListener('click', async () => {
-  const errEl = $('start-error'), okEl = $('start-ok');
-  errEl.classList.add('hidden'); okEl.classList.add('hidden');
-  const svcId = $('service-select').value;
-  const timeout = parseInt($('timeout-input').value) || 3600;
-  $('start-btn').disabled = true;
-  try {
-    await api.req('/api/client/start', { method:'POST', body:{ service_id: parseInt(svcId), timeout_seconds: timeout } });
-    okEl.textContent = 'Call started.'; okEl.classList.remove('hidden');
-    await refreshDashboard();
-  } catch (e) {
-    errEl.textContent = e.message; errEl.classList.remove('hidden');
-  } finally { $('start-btn').disabled = false; }
-});
-
-/* ---------- Admin ---------- */
+/* =========================================================================
+   ADMIN
+   ========================================================================= */
 async function refreshAdmin() {
   try {
     const [clients, services, overview] = await Promise.all([
-      api.req('/api/admin/clients'),
-      api.req('/api/admin/services'),
-      api.req('/api/admin/overview'),
+      api.get('/api/admin/clients'),
+      api.get('/api/admin/services'),
+      api.get('/api/admin/overview'),
     ]);
-    $('clients-tbody').innerHTML = clients.map(c => `
-      <tr class="border-b border-white/5 hover:bg-white/[0.02]">
+
+    // --- Clients table ---
+    $('#tbody-clients').innerHTML = clients.map(c => `
+      <tr class="tbl-row">
         <td class="px-5 py-3">
-          <div class="text-white">${c.username}</div>
-          <div class="text-xs ${c.enabled?'text-green-500':'text-gray-600'}">${c.enabled?'enabled':'disabled'}</div>
+          <div class="text-white font-medium">${esc(c.username)}</div>
         </td>
         <td class="px-5 py-3 text-gray-400">${c.max_concurrent}</td>
         <td class="px-5 py-3 text-gray-400">${c.active ?? 0}</td>
+        <td class="px-5 py-3">
+          <span class="badge" style="color:${c.enabled ? '#22c55e' : '#6b7280'};background:${c.enabled ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)'}">
+            <span class="dot" style="background:${c.enabled ? '#22c55e' : '#6b7280'}"></span>
+            ${c.enabled ? 'enabled' : 'disabled'}
+          </span>
+        </td>
         <td class="px-5 py-3 text-right space-x-2">
-          <button class="btn btn-ghost text-xs" data-edit-client="${c.id}"
-            data-username="${c.username}" data-max="${c.max_concurrent}" data-enabled="${c.enabled}">Edit</button>
-          <button class="btn btn-danger text-xs" data-del-client="${c.id}">Delete</button>
+          <button class="btn btn-ghost text-xs py-1 px-2.5" data-action="edit-client" data-id="${c.id}"
+            data-username="${esc(c.username)}" data-max="${c.max_concurrent}" data-enabled="${c.enabled}">Edit</button>
+          <button class="btn btn-danger text-xs py-1 px-2.5" data-action="del-client" data-id="${c.id}">Del</button>
         </td>
       </tr>`).join('');
 
-    $('services-tbody').innerHTML = services.map(s => `
-      <tr class="border-b border-white/5 hover:bg-white/[0.02]">
-        <td class="px-5 py-3 text-white">${s.name}</td>
-        <td class="px-5 py-3 font-mono text-xs text-gray-400 truncate max-w-[200px]">${s.binary_path}</td>
-        <td class="px-5 py-3">${s.enabled
-          ? '<span class="badge text-green-400"><span class="dot bg-green-400"></span>enabled</span>'
-          : '<span class="badge text-gray-500"><span class="dot bg-gray-500"></span>disabled</span>'}</td>
+    // --- Services table ---
+    $('#tbody-services').innerHTML = services.map(s => `
+      <tr class="tbl-row">
+        <td class="px-5 py-3 text-white font-medium">${esc(s.name)}</td>
+        <td class="px-5 py-3 font-mono text-gray-500 text-xs truncate max-w-[180px]" title="${esc(s.binary_path)}">${esc(s.binary_path)}</td>
+        <td class="px-5 py-3">
+          <span class="badge" style="color:${s.enabled ? '#22c55e' : '#6b7280'};background:${s.enabled ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)'}">
+            <span class="dot" style="background:${s.enabled ? '#22c55e' : '#6b7280'}"></span>
+            ${s.enabled ? 'on' : 'off'}
+          </span>
+        </td>
         <td class="px-5 py-3 text-right space-x-2">
-          <button class="btn btn-ghost text-xs" data-edit-service="${s.id}">Edit</button>
-          <button class="btn btn-danger text-xs" data-del-service="${s.id}">Delete</button>
+          <button class="btn btn-ghost text-xs py-1 px-2.5" data-action="edit-service" data-id="${s.id}">Edit</button>
+          <button class="btn btn-danger text-xs py-1 px-2.5" data-action="del-service" data-id="${s.id}">Del</button>
         </td>
       </tr>`).join('');
 
-    $('overview-tbody').innerHTML = overview.live.length
-      ? overview.live.map(i => `
-        <tr class="border-b border-white/5">
-          <td class="px-5 py-3 text-gray-400">#${i.id}</td>
-          <td class="px-5 py-3 text-white">${i.username}</td>
-          <td class="px-5 py-3 text-gray-300">${i.service_name}</td>
-          <td class="px-5 py-3 font-mono text-gray-400">${i.pid ?? '—'}</td>
+    // --- Overview table ---
+    if (overview.live.length === 0) {
+      $('#tbody-overview').innerHTML = '<tr><td colspan="6" class="px-5 py-10 text-center text-gray-600 text-sm">No live instances across all clients</td></tr>';
+    } else {
+      $('#tbody-overview').innerHTML = overview.live.map(i => `
+        <tr class="tbl-row">
+          <td class="px-5 py-3 text-gray-500 font-mono text-xs">#${i.id}</td>
+          <td class="px-5 py-3 text-white">${esc(i.username)}</td>
+          <td class="px-5 py-3 text-gray-300">${esc(i.service_name)}</td>
+          <td class="px-5 py-3 font-mono text-gray-400 text-xs">${i.pid ?? '\u2014'}</td>
           <td class="px-5 py-3">${statusBadge(i.status)}</td>
-          <td class="px-5 py-3 text-gray-400">${fmtTime(i.started_at)}</td>
-        </tr>`).join('')
-      : `<tr><td colspan="6" class="px-5 py-8 text-center text-gray-600">No live instances.</td></tr>`;
-  } catch (e) { if (e.message !== 'Unauthorized') alert(e.message); }
+          <td class="px-5 py-3 text-gray-400 text-xs">${fmtTime(i.started_at)}</td>
+        </tr>`).join('');
+    }
+
+  } catch (err) {
+    if (err.message !== 'Session expired') console.error('Admin refresh error:', err);
+  }
 }
 
+/* --- Admin delegated click handler --- */
 document.addEventListener('click', async (e) => {
-  const t = e.target;
-  if (t.id === 'new-client-btn') clientModal();
-  if (t.id === 'new-service-btn') serviceModal();
-  if (t.dataset.editClient) clientModal({
-    id:+t.dataset.editClient, username:t.dataset.username, max:+t.dataset.max, enabled:t.dataset.enabled==='true'
-  });
-  if (t.dataset.editService) {
-    const s = (await api.req('/api/admin/services')).find(x => x.id === +t.dataset.editService);
-    serviceModal(s);
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const id = btn.dataset.id;
+
+  if (action === 'edit-client') {
+    openClientModal({
+      id: +id,
+      username: btn.dataset.username,
+      max_concurrent: +btn.dataset.max,
+      enabled: btn.dataset.enabled === 'true',
+    });
   }
-  if (t.dataset.delClient) {
-    if (confirm('Delete client and stop their instances?')) {
-      await api.req('/api/admin/clients/' + t.dataset.delClient, { method:'DELETE' }).catch(alert);
-      refreshAdmin();
-    }
+  if (action === 'del-client') {
+    if (!confirm('Delete this client and stop all their instances?')) return;
+    try { await api.del('/api/admin/clients/' + id); toast('Client deleted'); refreshAdmin(); }
+    catch (err) { toast(err.message, 'err'); }
   }
-  if (t.dataset.delService) {
-    if (confirm('Delete this service?')) {
-      await api.req('/api/admin/services/' + t.dataset.delService, { method:'DELETE' }).catch(alert);
-      refreshAdmin();
-    }
+  if (action === 'del-service') {
+    if (!confirm('Delete this service?')) return;
+    try { await api.del('/api/admin/services/' + id); toast('Service deleted'); refreshAdmin(); }
+    catch (err) { toast(err.message, 'err'); }
   }
 });
 
-/* ---------- Modals ---------- */
-function openModal(html) {
-  const root = $('modal-root');
-  root.innerHTML = `<div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" id="modal-bg">
-    <div class="card w-full max-w-md p-6">${html}</div></div>`;
-  $('modal-bg').addEventListener('click', (e) => { if (e.target.id === 'modal-bg') root.innerHTML=''; });
-}
-function closeModal() { $('modal-root').innerHTML = ''; }
+$('#btn-new-client').addEventListener('click', () => openClientModal());
+$('#btn-new-service').addEventListener('click', () => openServiceModal());
 
-function clientModal(c = {}) {
+/* --- Edit service (needs async fetch of full record) --- */
+document.addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action="edit-service"]');
+  if (!btn) return;
+  try {
+    const services = await api.get('/api/admin/services');
+    const svc = services.find(s => s.id === +btn.dataset.id);
+    if (svc) openServiceModal(svc);
+  } catch (err) { toast(err.message, 'err'); }
+});
+
+/* =========================================================================
+   MODALS
+   ========================================================================= */
+function openModal(html) {
+  $('#modal-content').innerHTML = html;
+  $('#modal-overlay').classList.remove('hidden');
+}
+function closeModal() {
+  $('#modal-overlay').classList.add('hidden');
+  $('#modal-content').innerHTML = '';
+}
+$('#modal-backdrop').addEventListener('click', closeModal);
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+/* --- Client modal --- */
+function openClientModal(c = {}) {
   const isEdit = !!c.id;
   openModal(`
-    <h3 class="text-white font-semibold mb-4">${isEdit?'Edit':'New'} Client</h3>
-    <form id="client-form" class="space-y-3">
-      <div><label class="text-xs text-gray-500">Username</label>
-        <input id="cf-username" class="input" value="${c.username||''}" ${isEdit?'disabled':''} required /></div>
-      <div><label class="text-xs text-gray-500">Password ${isEdit?'(leave blank to keep)':''}</label>
-        <input id="cf-password" type="password" class="input" placeholder="••••••" ${isEdit?'':'required'} minlength="6" /></div>
-      <div><label class="text-xs text-gray-500">Max concurrent slots</label>
-        <input id="cf-max" type="number" min="0" max="10" class="input" value="${c.max ?? 3}" required /></div>
-      ${isEdit ? `<label class="flex items-center gap-2 text-sm text-gray-300">
-        <input id="cf-enabled" type="checkbox" ${c.enabled?'checked':''} /> Enabled</label>` : ''}
-      <div class="flex gap-2 pt-2">
-        <button class="btn btn-primary flex-1">${isEdit?'Save':'Create'}</button>
+    <h3 class="text-white font-semibold text-base mb-5">${isEdit ? 'Edit Client' : 'Create Client'}</h3>
+    <form id="modal-form" class="space-y-4">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Username</label>
+        <input id="mf-username" class="input-field" value="${esc(c.username)}" ${isEdit ? 'disabled' : 'required'} />
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Password${isEdit ? ' (blank to keep)' : ''}</label>
+        <input id="mf-password" type="password" class="input-field" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022" ${isEdit ? '' : 'required'} minlength="6" />
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max concurrent slots</label>
+        <input id="mf-max" type="number" min="0" max="10" class="input-field" value="${c.max_concurrent ?? 3}" required />
+      </div>
+      ${isEdit ? `
+      <label class="flex items-center gap-2.5 cursor-pointer">
+        <input id="mf-enabled" type="checkbox" ${c.enabled ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+        <span class="text-sm text-gray-300">Enabled</span>
+      </label>` : ''}
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn btn-primary flex-1">${isEdit ? 'Save Changes' : 'Create Client'}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
       </div>
-    </form>`);
-  $('client-form').addEventListener('submit', async (e) => {
+    </form>
+  `);
+
+  $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const payload = {
-      max_concurrent: parseInt($('cf-max').value),
-    };
-    const pw = $('cf-password').value;
+    const btn = e.target.querySelector('[type="submit"]');
+    btn.disabled = true;
+    const payload = { max_concurrent: parseInt($('#mf-max').value) };
+    const pw = $('#mf-password').value;
     if (pw) payload.password = pw;
     try {
       if (isEdit) {
-        payload.enabled = $('cf-enabled').checked;
-        await api.req('/api/admin/clients/' + c.id, { method:'PATCH', body: payload });
+        payload.enabled = $('#mf-enabled').checked;
+        await api.patch('/api/admin/clients/' + c.id, payload);
+        toast('Client updated');
       } else {
-        payload.username = $('cf-username').value;
+        payload.username = $('#mf-username').value;
         payload.password = pw;
-        await api.req('/api/admin/clients', { method:'POST', body: payload });
+        await api.post('/api/admin/clients', payload);
+        toast('Client created');
       }
-      closeModal(); refreshAdmin();
-    } catch (err) { alert(err.message); }
+      closeModal();
+      refreshAdmin();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { btn.disabled = false; }
   });
 }
 
-function serviceModal(s = {}) {
+/* --- Service modal --- */
+function openServiceModal(s = {}) {
   const isEdit = !!s.id;
   openModal(`
-    <h3 class="text-white font-semibold mb-4">${isEdit?'Edit':'New'} Service</h3>
-    <form id="service-form" class="space-y-3">
-      <div><label class="text-xs text-gray-500">Name</label>
-        <input id="sf-name" class="input" value="${s.name||''}" required /></div>
-      <div><label class="text-xs text-gray-500">Binary path (server-side)</label>
-        <input id="sf-binary" class="input font-mono text-xs" value="${s.binary_path||''}" placeholder="./binaries/whitelist-bypass" required /></div>
-      <div><label class="text-xs text-gray-500">Credentials / cookies</label>
-        <textarea id="sf-creds" class="input font-mono text-xs" rows="3" placeholder="session_token=...; ..." ${isEdit?'':'required'}>${s.credentials||''}</textarea>
-        ${isEdit?'<p class="text-[10px] text-gray-600">Leave unchanged to keep current value.</p>':''}</div>
-      <div><label class="text-xs text-gray-500">Extra args (optional)</label>
-        <input id="sf-extra" class="input font-mono text-xs" value="${s.extra_args||''}" placeholder="--resources ..." /></div>
-      <label class="flex items-center gap-2 text-sm text-gray-300">
-        <input id="sf-enabled" type="checkbox" ${s.enabled!==false?'checked':''} /> Enabled</label>
-      <div class="flex gap-2 pt-2">
-        <button class="btn btn-primary flex-1">${isEdit?'Save':'Create'}</button>
+    <h3 class="text-white font-semibold text-base mb-5">${isEdit ? 'Edit Service' : 'Create Service'}</h3>
+    <form id="modal-form" class="space-y-4">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service Name</label>
+        <input id="mf-name" class="input-field" value="${esc(s.name)}" required />
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Binary Path (server-side)</label>
+        <input id="mf-binary" class="input-field font-mono text-xs" value="${esc(s.binary_path)}" placeholder="./binaries/whitelist-bypass" required />
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Credentials / Cookies</label>
+        <textarea id="mf-creds" class="input-field font-mono text-xs" rows="3" placeholder="session_token=abc...">${esc(s.credentials || '')}</textarea>
+        ${isEdit ? '<p class="text-[10px] text-gray-600 mt-1">Leave blank to keep current value</p>' : ''}
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Extra Args (optional)</label>
+        <input id="mf-extra" class="input-field font-mono text-xs" value="${esc(s.extra_args || '')}" placeholder="--resources ..." />
+      </div>
+      <label class="flex items-center gap-2.5 cursor-pointer">
+        <input id="mf-svc-enabled" type="checkbox" ${s.enabled !== false ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+        <span class="text-sm text-gray-300">Enabled</span>
+      </label>
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn btn-primary flex-1">${isEdit ? 'Save Changes' : 'Create Service'}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
       </div>
-    </form>`);
-  $('service-form').addEventListener('submit', async (e) => {
+    </form>
+  `);
+
+  $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const btn = e.target.querySelector('[type="submit"]');
+    btn.disabled = true;
     const payload = {
-      name: $('sf-name').value,
-      binary_path: $('sf-binary').value,
-      extra_args: $('sf-extra').value,
-      enabled: $('sf-enabled').checked,
+      name: $('#mf-name').value,
+      binary_path: $('#mf-binary').value,
+      extra_args: $('#mf-extra').value,
+      enabled: $('#mf-svc-enabled').checked,
     };
-    const creds = $('sf-creds').value;
-    if (creds) payload.credentials = creds;
+    const creds = $('#mf-creds').value;
+    if (creds || !isEdit) payload.credentials = creds;
     try {
-      if (isEdit) await api.req('/api/admin/services/' + s.id, { method:'PATCH', body: payload });
-      else { payload.credentials = creds; await api.req('/api/admin/services', { method:'POST', body: payload }); }
-      closeModal(); refreshAdmin();
-    } catch (err) { alert(err.message); }
+      if (isEdit) {
+        await api.patch('/api/admin/services/' + s.id, payload);
+        toast('Service updated');
+      } else {
+        await api.post('/api/admin/services', payload);
+        toast('Service created');
+      }
+      closeModal();
+      refreshAdmin();
+    } catch (err) { toast(err.message, 'err'); }
+    finally { btn.disabled = false; }
   });
 }
-window.closeModal = closeModal;
 
-/* ---------- Init ---------- */
+/* =========================================================================
+   INIT: try to restore session, otherwise show login
+   ========================================================================= */
 (async () => {
-  if (api.token) await bootApp();
-  else showLogin();
+  if (api.token) {
+    try { await bootstrap(); } catch { renderLogin(); }
+  } else {
+    renderLogin();
+  }
 })();
-// auto-refresh dashboard while app is open
-setInterval(() => { if (api.token && currentSection === 'dashboard') refreshDashboard(); }, 5000);
+
+/* Auto-refresh the active tab every 5 seconds */
+setInterval(() => {
+  if (!api.token) return;
+  if (currentTab === 'dashboard') refreshDashboard();
+}, 5000);
 </script>
 </body>
 </html>

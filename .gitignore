@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local data & binaries (never commit state or compiled tools)
+data/
+binaries/*
+!binaries/.gitkeep
+
+# OS
+.DS_Store
