@@ -137,12 +137,17 @@ fi
 # Create the SQLite DB + schema by importing the app (lifespan runs init).
 log "Initializing database..."
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
-sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/python" - <<'PY'
-import asyncio, os
-os.chdir(os.environ.get("APP_DIR", "."))
+# NOTE: pass APP_DIR as an arg AND sys.path.insert it, so imports resolve
+# regardless of the cwd sudo leaves us in. (A quoted heredoc <<'PY' would
+# NOT expand $APP_DIR — that was the original bug.)
+sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/python" - "$APP_DIR" <<'PY'
+import asyncio, os, sys
+APP_DIR = sys.argv[1]
+os.chdir(APP_DIR)
+sys.path.insert(0, APP_DIR)        # <- guarantee `import config` works
 # Load .env manually so paths resolve even outside systemd.
 from pathlib import Path
-envf = Path(".env")
+envf = Path(APP_DIR) / ".env"
 if envf.exists():
     for line in envf.read_text().splitlines():
         line = line.strip()
