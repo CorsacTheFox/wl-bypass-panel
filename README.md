@@ -52,36 +52,70 @@ button.
 
 The `deploy/install.sh` script is **idempotent** (safe to re-run) and handles
 the whole production setup: apt packages, dedicated unprivileged service user,
-virtualenv, DB init, systemd service, nginx (TLS + rate limits), firewall, and
-optional Let's Encrypt certificate.
+virtualenv, DB init, systemd service, a reverse proxy (your choice of **nginx**
+or **Caddy**), firewall, and TLS.
+
+It is **interactive by default** — it asks a handful of questions and accepts
+the `[default]` if you just press Enter. Every question also has an **env-var
+override**, so the install is fully scriptable for CI.
 
 ```bash
 # 1. Get the code onto the server (git clone, scp, rsync, ...)
 scp -r . ubuntu@your-server:/tmp/whitelist-manager
 ssh ubuntu@your-server
 
-# 2. Run the installer as root.
-#    With a domain -> full HTTPS via Let's Encrypt:
-sudo DOMAIN=wb.example.com EMAIL=you@example.com \
-     bash /tmp/whitelist-manager/deploy/install.sh
-
-#    Without a domain -> plain HTTP on :8000 (good for a quick test / LAN):
+# 2. Run the installer as root (interactive):
 sudo bash /tmp/whitelist-manager/deploy/install.sh
+
+# ...or drive it entirely from env vars (non-interactive):
+# nginx + a domain (Let's Encrypt TLS):
+sudo PROXY=nginx DOMAIN=wb.example.com EMAIL=you@example.com \
+     bash /tmp/whitelist-manager/deploy/install.sh
+# caddy + a domain (caddy obtains TLS automatically):
+sudo PROXY=caddy DOMAIN=wb.example.com \
+     bash /tmp/whitelist-manager/deploy/install.sh
+# no domain — plain HTTP on the external port (LAN / quick test):
+sudo PROXY=nginx bash /tmp/whitelist-manager/deploy/install.sh
 ```
 
-That single command:
-1. Installs `python3`, `nginx`, `sqlite3`, `ufw`, `certbot` (+ nginx plugin)
+### Questions it asks (and their env-var equivalents)
+
+| Prompt | Env var | Default | Notes |
+|--------|---------|---------|-------|
+| Reverse proxy (`nginx` / `caddy`) | `PROXY` | `nginx` | caddy auto-obtains TLS |
+| Domain for HTTPS | `DOMAIN` | *(blank = HTTP)* | blank → plain HTTP |
+| Let's Encrypt email | `EMAIL` | — | required for `nginx` + `DOMAIN` |
+| Internal uvicorn port | `APP_PORT` | `8000` | behind the proxy; `WB_PORT` in `.env` |
+| External HTTP port | `PUBLIC_PORT` | `80` | only asked when there is no domain |
+| Admin username | `ADMIN_USERNAME` | `admin` | |
+| Admin password | `ADMIN_PASSWORD` | *auto-generated* | blank at the prompt = generated alphanumeric |
+
+The generated password uses only `[A-Za-z0-9]` (no `+`/`/`/`=`), so it copies
+and pastes cleanly.
+
+What the installer does:
+1. Installs `python3`, `sqlite3`, `ufw`, and either `nginx` (+ `certbot`) or
+   `caddy` (from Caddy's apt repo)
 2. Creates a system user `wb-manager` (no shell, no home — least privilege)
 3. Installs the app to `/opt/whitelist-manager`, builds the venv, installs deps
-4. Seeds `/opt/whitelist-manager/.env` (copy of `.env.example`, with a
-   **randomly-generated admin password**) and initializes the SQLite DB
-5. Installs + enables + starts the `wb-manager` systemd service
-6. Installs the nginx site (`nginx.sample.conf`) + shared `wb-proxy.conf` snippet
-7. Opens firewall ports (80/443 with a domain, else 8000)
-8. Issues a Let's Encrypt cert and configures nginx for HTTPS + redirect
+4. Writes `/opt/whitelist-manager/.env` (mode 600) and initializes the SQLite DB
+5. **Forces the admin password to match `.env`** (see note below)
+6. Renders + enables + starts the `wb-manager` systemd service (host/port from
+   `.env`, no longer hardcoded)
+7. Installs the reverse-proxy config and reloads it
+8. Opens firewall ports (80/443 with a domain, else `PUBLIC_PORT`)
+9. Requests a Let's Encrypt cert (`nginx` path only — Caddy handles its own TLS)
 
-**After install:** log in at `https://wb.example.com` (or `http://<ip>:8000`)
-as `admin` — the password is printed during install and stored in
+> **Admin password is re-synced on every run.** The bootstrap admin is created
+> only on the *first* run, so editing `WB_ADMIN_PASSWORD` in `.env` later would
+> normally have **no effect** — which is a common "I can't log in" trap. To
+> avoid it, the installer always re-syncs the admin row to whatever is in
+> `.env`. Consequence: **re-running the installer resets the admin password.**
+> To change it manually instead, see the cheatsheet below.
+
+**After install:** log in at `https://wb.example.com` (or
+`http://<ip>:<PUBLIC_PORT>` without a domain) as the admin user — the password
+is printed at the end of the install and stored in
 `/opt/whitelist-manager/.env`.
 
 ### Operations cheatsheet
@@ -89,14 +123,42 @@ as `admin` — the password is printed during install and stored in
 systemctl status wb-manager              # is it up?
 systemctl restart wb-manager             # restart after editing .env
 journalctl -u wb-manager -f              # live logs
-sudo nginx -t && sudo systemctl reload nginx   # after nginx changes
-cat /opt/whitelist-manager/.env          # admin password / settings
+cat /opt/whitelist-manager/.env          # admin password / settings (mode 600)
 ls /opt/whitelist-manager/data/app.db    # SQLite database
+
+# nginx:
+sudo nginx -t && sudo systemctl reload nginx
+# caddy:
+sudo systemctl reload caddy
+
+# Change the admin password manually (without re-running install.sh):
+sudo -u wb-manager /opt/whitelist-manager/.venv/bin/python - <<'PY'
+import os, sys, asyncio
+A="/opt/whitelist-manager"; os.chdir(A); sys.path.insert(0, A)
+for line in open(f"{A}/.env"):
+    line=line.strip()
+    if line and not line.startswith("#") and "=" in line:
+        k,v=line.split("=",1); os.environ.setdefault(k.strip(), v.strip())
+from db import db; from security import hash_password
+NEWPW = "your-new-password-here"
+async def m():
+    await db.connect()
+    await db.execute(
+        "UPDATE users SET password_hash=?, role='admin', enabled=1 WHERE username=?",
+        (hash_password(NEWPW), os.environ.get("WB_ADMIN_USERNAME","admin")))
+    await db.close()
+asyncio.run(m())
+print("admin password updated")
+PY
+# and update .env to match:
+sudo sed -i "s|^WB_ADMIN_PASSWORD=.*|WB_ADMIN_PASSWORD=your-new-password-here|" /opt/whitelist-manager/.env
+sudo systemctl restart wb-manager
 ```
 
 ### Updating the app
-Re-run the installer — it rsyncs fresh code, reinstalls deps, and restarts
-the service, while leaving `.env` and `data/` untouched:
+Re-run the installer — it rsyncs fresh code, reinstalls deps, and restarts the
+service, while leaving `.env` and `data/` untouched (**except it re-syncs the
+admin password from `.env`**):
 ```bash
 sudo bash /tmp/whitelist-manager/deploy/install.sh
 ```
@@ -105,10 +167,10 @@ sudo bash /tmp/whitelist-manager/deploy/install.sh
 | File | Purpose |
 |------|---------|
 | `deploy/install.sh` | One-shot idempotent installer (Ubuntu/Debian) |
-| `deploy/wb-manager.service` | systemd unit template (dedicated user, hardening, restart) |
+| `deploy/wb-manager.service` | systemd unit template (host/port templated, hardened) |
 | `deploy/nginx.sample.conf` | nginx site: TLS, rate limits, static serving, proxy |
 | `deploy/wb-proxy.snippet.conf` | Shared `proxy_set_header` snippet |
-| `.env.example` | Environment template (copied to `.env` on first install) |
+| `.env.example` | Environment template (written into `.env` on first install) |
 
 ---
 

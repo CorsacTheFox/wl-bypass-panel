@@ -17,9 +17,11 @@ WorkingDirectory={{APP_DIR}}
 # Load secrets/overrides from here (created by install.sh from .env.example).
 EnvironmentFile=-{{APP_DIR}}/.env
 
-# Run inside the venv. Bound to 127.0.0.1 — nginx fronts it.
+# Run inside the venv. Bound to 127.0.0.1 — the reverse proxy fronts it.
+# Host/port are rendered by install.sh from .env (WB_HOST / WB_PORT), so they
+# can be changed without editing this unit — re-run the installer to update.
 ExecStart={{APP_DIR}}/.venv/bin/python -m uvicorn main:app \
-    --host 127.0.0.1 --port 8000 --workers 1
+    --host {{APP_HOST}} --port {{APP_PORT}} --workers 1
 
 Restart=on-failure
 RestartSec=3
