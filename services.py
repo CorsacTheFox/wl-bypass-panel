@@ -16,9 +16,16 @@ Why a separate layer?
 from __future__ import annotations
 
 import secrets
+import zipfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from config import DEFAULT_MAX_CONCURRENT, DEFAULT_TIMEOUT_SECONDS
+from config import (
+    COOKIES_DIR,
+    DEFAULT_MAX_CONCURRENT,
+    DEFAULT_TIMEOUT_SECONDS,
+    ensure_dirs,
+)
 from db import db
 from process_manager import LIVE, ProcessError, S_RUNNING, process_manager
 from security import hash_password, verify_password
@@ -30,6 +37,10 @@ class ConcurrencyLimitError(Exception):
 
 class NotFoundError(Exception):
     pass
+
+
+class CookiesError(Exception):
+    """Raised on a malformed cookies zip upload."""
 
 
 # --------------------------------------------------------------------------- #
@@ -179,6 +190,112 @@ class ServiceRegistry:
 
 
 service_registry = ServiceRegistry()
+
+
+# --------------------------------------------------------------------------- #
+# Cookies files — zip upload of cookies-<binary>.json, listed/deleted by admin
+# --------------------------------------------------------------------------- #
+class CookiesStore:
+    """Manages the on-disk pool of cookies-*.json files.
+
+    Admin uploads a zip (e.g. cookies-dion.json, cookies-wbstream.json, ...).
+    We extract every top-level ``cookies-*.json`` member into COOKIES_DIR and
+    expose them as a dropdown when creating/editing a Service. The chosen
+    absolute path is what gets stored in ``services.credentials`` and passed
+    to the binary as ``-cookies <path>``.
+    """
+
+    def list(self) -> list[dict]:
+        """All cookies-*.json currently on disk, newest first."""
+        if not COOKIES_DIR.exists():
+            return []
+        files = sorted(
+            COOKIES_DIR.glob("cookies-*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        out = []
+        for p in files:
+            st = p.stat()
+            out.append({
+                "name": p.name,
+                # absolute path is what services.credentials stores
+                "path": str(p.resolve()),
+                "size": st.st_size,
+                "mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc)
+                    .strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        return out
+
+    def save_zip(self, data: bytes, replace: bool = True) -> list[str]:
+        """Extract cookies-*.json members from an in-memory zip.
+
+        Only top-level ``cookies-*.json`` files are accepted (no path
+        traversal, no nested dirs, no other extensions). Returns the list of
+        extracted filenames. Raises CookiesError on anything suspicious.
+        """
+        ensure_dirs()
+        import io
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as e:
+            raise CookiesError(f"not a valid zip file: {e}") from e
+
+        members = []
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = Path(info.filename).name  # flatten: take basename only
+            if not name.startswith("cookies-") or not name.endswith(".json"):
+                continue
+            # Reject absolute / parent-traversal entries defensively, even
+            # though we only ever write into COOKIES_DIR by basename.
+            if info.filename.startswith("/") or ".." in Path(info.filename).parts:
+                raise CookiesError(f"unsafe path in zip: {info.filename}")
+            members.append((name, info))
+
+        if not members:
+            raise CookiesError(
+                "zip contained no 'cookies-*.json' files "
+                "(expected names like cookies-dion.json)"
+            )
+
+        extracted: list[str] = []
+        for name, info in members:
+            target = COOKIES_DIR / name
+            if target.exists() and not replace:
+                continue
+            with zf.open(info) as src, open(target, "wb") as dst:
+                dst.write(src.read())
+            # cookies are a credential — keep them off group/world.
+            target.chmod(0o600)
+            extracted.append(name)
+        return extracted
+
+    def delete(self, name: str) -> None:
+        """Remove a single cookies-<name>.json by filename.
+
+        ``name`` is validated to be a bare filename under COOKIES_DIR to
+        prevent traversal. Raises NotFoundError if absent, CookiesError if
+        ``name`` looks unsafe.
+        """
+        # Only allow a plain basename like 'cookies-dion.json'.
+        if "/" in name or "\\" in name or ".." in name:
+            raise CookiesError("invalid cookies filename")
+        if not name.startswith("cookies-") or not name.endswith(".json"):
+            raise CookiesError("invalid cookies filename")
+        target = (COOKIES_DIR / name).resolve()
+        # Final guard: resolved path must live inside COOKIES_DIR.
+        try:
+            target.relative_to(COOKIES_DIR.resolve())
+        except ValueError as e:
+            raise CookiesError("invalid cookies filename") from e
+        if not target.exists():
+            raise NotFoundError("cookies file not found")
+        target.unlink()
+
+
+cookies_store = CookiesStore()
 
 
 # --------------------------------------------------------------------------- #

@@ -1,13 +1,15 @@
-"""Admin routes: CRUD for clients, CRUD for services, global view."""
+"""Admin routes: CRUD for clients, CRUD for services, cookies uploads, global view."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from config import DEFAULT_MAX_CONCURRENT
 from security import require_admin
 from services import (
+    CookiesError,
     NotFoundError,
+    cookies_store,
     instance_service,
     service_registry,
     user_service,
@@ -121,6 +123,59 @@ async def delete_service(service_id: int):
         await service_registry.delete(service_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="service not found")
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Cookies files (uploaded as a zip of cookies-<binary>.json)
+# --------------------------------------------------------------------------- #
+# Hard cap on a single cookies zip. Cookies JSONs are tiny (a few KB), so a
+# megabyte is plenty and keeps memory bounded when reading into RAM.
+COOKIES_ZIP_MAX_BYTES = 1 * 1024 * 1024
+
+
+@router.get("/cookies")
+async def list_cookies():
+    """List all cookies-*.json available for use as a service's credentials."""
+    return cookies_store.list()
+
+
+@router.post("/cookies", status_code=status.HTTP_201_CREATED)
+async def upload_cookies(file: UploadFile = File(...)):
+    """Upload a zip of cookies-*.json files. Top-level members matching
+    `cookies-*.json` are extracted into the cookies directory.
+
+    Example zip contents:
+        cookies-dion.json
+        cookies-wbstream.json
+        cookies-vk.json
+        cookies-yandex.json
+    """
+    data = await file.read()
+    if len(data) > COOKIES_ZIP_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"zip too large: {len(data)} bytes "
+                   f"(max {COOKIES_ZIP_MAX_BYTES})",
+        )
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    try:
+        extracted = cookies_store.save_zip(data)
+    except CookiesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "extracted": extracted, "all": cookies_store.list()}
+
+
+@router.delete("/cookies/{name}")
+async def delete_cookies(name: str):
+    """Delete a single cookies-<name>.json by filename."""
+    try:
+        cookies_store.delete(name)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="cookies file not found")
+    except CookiesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}
 
 

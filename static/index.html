@@ -269,16 +269,24 @@
         <div class="card overflow-hidden">
           <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
             <h2 class="text-white font-semibold text-sm">Services</h2>
-            <button id="btn-new-service" class="btn btn-primary text-xs py-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-              New Service
-            </button>
+            <div class="flex items-center gap-2">
+              <input id="inp-cookies-zip" type="file" accept=".zip" class="hidden" />
+              <button id="btn-upload-cookies" class="btn btn-ghost text-xs py-1.5" title="Upload a zip of cookies-*.json">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>
+                Upload cookies
+              </button>
+              <button id="btn-new-service" class="btn btn-primary text-xs py-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                New Service
+              </button>
+            </div>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead><tr class="text-gray-500 text-[11px] uppercase tracking-wider">
                 <th class="text-left font-medium px-5 py-2.5">Name</th>
                 <th class="text-left font-medium px-5 py-2.5">Binary</th>
+                <th class="text-left font-medium px-5 py-2.5">Cookies</th>
                 <th class="text-left font-medium px-5 py-2.5">Status</th>
                 <th class="text-right font-medium px-5 py-2.5">Actions</th>
               </tr></thead>
@@ -730,6 +738,36 @@ document.addEventListener('click', async (e) => {
 $('#btn-new-client').addEventListener('click', () => openClientModal());
 $('#btn-new-service').addEventListener('click', () => openServiceModal());
 
+/* --- Cookies zip upload (admin) --- */
+$('#btn-upload-cookies').addEventListener('click', () => $('#inp-cookies-zip').click());
+$('#inp-cookies-zip').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';  // allow re-uploading the same file later
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/admin/cookies', {
+      method: 'POST',
+      headers: api.token ? { Authorization: 'Bearer ' + api.token } : {},
+      body: form,   // multipart — do NOT set Content-Type; the browser sets the boundary
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `upload failed (${res.status})`);
+    const names = (body.extracted || []).join(', ') || 'nothing new';
+    toast(`Cookies extracted: ${names}`);
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+function cookiesBasename(path) {
+  if (!path) return '—';
+  // show just the filename; credentials now stores an absolute path
+  const parts = String(path).split('/');
+  return parts[parts.length - 1] || path;
+}
+
 /* --- Edit service (needs async fetch of full record) --- */
 document.addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-action="edit-service"]');
@@ -816,8 +854,17 @@ function openClientModal(c = {}) {
 }
 
 /* --- Service modal --- */
-function openServiceModal(s = {}) {
+async function openServiceModal(s = {}) {
   const isEdit = !!s.id;
+  // Fetch the cookies dropdown options (cookies-*.json uploaded by admin).
+  let cookies = [];
+  try { cookies = await api.get('/api/admin/cookies'); }
+  catch (e) { /* admin only; ignore if unreachable */ }
+  const cookieOpts = cookies.map(c =>
+    `<option value="${esc(c.path)}" ${s.credentials === c.path ? 'selected' : ''}>${esc(c.name)} (${c.size} B)</option>`
+  ).join('');
+  const manualSelected = s.credentials && !cookies.some(c => c.path === s.credentials);
+
   openModal(`
     <h3 class="text-white font-semibold text-base mb-5">${isEdit ? 'Edit Service' : 'Create Service'}</h3>
     <form id="modal-form" class="space-y-4">
@@ -827,16 +874,22 @@ function openServiceModal(s = {}) {
       </div>
       <div>
         <label class="block text-xs text-gray-500 mb-1.5 font-medium">Binary Path (server-side)</label>
-        <input id="mf-binary" class="input-field font-mono text-xs" value="${esc(s.binary_path)}" placeholder="./binaries/whitelist-bypass" required />
+        <input id="mf-binary" class="input-field font-mono text-xs" value="${esc(s.binary_path)}" placeholder="./binaries/headless-wbstream-creator" required />
       </div>
       <div>
-        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Credentials / Cookies</label>
-        <textarea id="mf-creds" class="input-field font-mono text-xs" rows="3" placeholder="session_token=abc...">${esc(s.credentials || '')}</textarea>
-        ${isEdit ? '<p class="text-[10px] text-gray-600 mt-1">Leave blank to keep current value</p>' : ''}
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Cookies file (path passed to the binary as -cookies)</label>
+        <select id="mf-cookies-select" class="input-field font-mono text-xs">
+          <option value="">— none (binary takes no cookies) —</option>
+          ${cookieOpts}
+          <option value="__manual__" ${manualSelected ? 'selected' : ''}>— manual path below —</option>
+        </select>
+        <input id="mf-cookies-manual" class="input-field font-mono text-xs mt-2 ${manualSelected ? '' : 'hidden'}"
+               value="${manualSelected ? esc(s.credentials) : ''}" placeholder="/opt/.../data/cookies/cookies-wbstream.json" />
+        <p class="text-[10px] text-gray-600 mt-1">Upload more via the “Upload cookies” button on the Services card.</p>
       </div>
       <div>
         <label class="block text-xs text-gray-500 mb-1.5 font-medium">Extra Args (optional)</label>
-        <input id="mf-extra" class="input-field font-mono text-xs" value="${esc(s.extra_args || '')}" placeholder="--resources ..." />
+        <input id="mf-extra" class="input-field font-mono text-xs" value="${esc(s.extra_args || '')}" placeholder="--resources moderate" />
       </div>
       <label class="flex items-center gap-2.5 cursor-pointer">
         <input id="mf-svc-enabled" type="checkbox" ${s.enabled !== false ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
@@ -849,18 +902,29 @@ function openServiceModal(s = {}) {
     </form>
   `);
 
+  // Toggle the manual-path input visibility based on the dropdown choice.
+  const sel = $('#mf-cookies-select');
+  const man = $('#mf-cookies-manual');
+  sel.addEventListener('change', () => {
+    if (sel.value === '__manual__') man.classList.remove('hidden');
+    else man.classList.add('hidden');
+  });
+
   $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('[type="submit"]');
     btn.disabled = true;
+    // Resolve the final cookies path from the dropdown / manual field.
+    let cookiesPath = '';
+    if (sel.value === '__manual__') cookiesPath = man.value.trim();
+    else cookiesPath = sel.value;
     const payload = {
       name: $('#mf-name').value,
       binary_path: $('#mf-binary').value,
+      credentials: cookiesPath,   // a file PATH (or empty) — not raw content
       extra_args: $('#mf-extra').value,
       enabled: $('#mf-svc-enabled').checked,
     };
-    const creds = $('#mf-creds').value;
-    if (creds || !isEdit) payload.credentials = creds;
     try {
       if (isEdit) {
         await api.patch('/api/admin/services/' + s.id, payload);

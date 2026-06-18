@@ -19,14 +19,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import shlex
 import signal
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import aiosqlite
 
-from config import PROCESS_KILL_GRACE_SECONDS, REAPER_INTERVAL_SECONDS
+from config import (
+    COOKIE_FLAG,
+    ERROR_TAIL_BYTES,
+    LOGS_DIR,
+    PROCESS_KILL_GRACE_SECONDS,
+    REAPER_INTERVAL_SECONDS,
+)
 from db import db
 
 log = logging.getLogger("process_manager")
@@ -51,9 +59,11 @@ class ProcessError(Exception):
 class TrackedProcess:
     """A single live child process and its lifecycle bookkeeping."""
 
-    def __init__(self, instance_id: int, proc: asyncio.subprocess.Process):
+    def __init__(self, instance_id: int, proc: asyncio.subprocess.Process,
+                 log_path: Optional[Path] = None):
         self.instance_id = instance_id
         self.proc = proc
+        self.log_path = log_path
         self.waiter: asyncio.Task | None = None
         self.kill_task: asyncio.Task | None = None  # timeout enforcer
 
@@ -107,31 +117,49 @@ class ProcessManager:
     ) -> int:
         """Spawn the binary for `instance_id`. Returns the child PID.
 
-        The exact command line is binary-agnostic: we pass the binary path,
-        then the credentials blob (the cookies/session token the tool needs),
-        then any extra static args configured per service. Adapt the arg
-        layout in :func:`_build_command` to match the binary's flags.
+        ``credentials`` is treated as a **path** to a cookies JSON file. If it
+        resolves to an existing file, the binary receives
+        ``-cookies <path>``; if it is empty/blank, no cookies flag is emitted
+        (some binaries — e.g. the *-joiner tools — take no cookies at all).
+        Extra args configured per service are appended verbatim.
+
+        stdout+stderr of the binary are tee'd to ``LOGS_DIR/instance-<id>.log``
+        so crashes are diagnosable; on non-zero exit the tail of that log is
+        written to ``instances.error``.
         """
         args = self._build_command(binary_path, credentials, extra_args)
 
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.DEVNULL,
-                # New process group so we can signal the whole tree if needed.
-                start_new_session=True,
-                env=env,
-            )
-        except FileNotFoundError as e:
-            await self._mark_terminal(instance_id, S_CRASHED, error=f"binary not found: {binary_path}")
-            raise ProcessError(f"Binary not found: {binary_path}") from e
-        except OSError as e:
-            await self._mark_terminal(instance_id, S_CRASHED, error=f"spawn error: {e}")
-            raise ProcessError(f"Failed to spawn binary: {e}") from e
+        # One log file per instance lifecycle, opened for the child to inherit.
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_path = LOGS_DIR / f"instance-{instance_id}.log"
+        log_file = open(log_path, "ab", buffering=0)
+        log_file.write(
+            f"==== instance {instance_id} @ {datetime.now(timezone.utc).isoformat()} ====\n"
+            f"cmd: {shlex.join(args)}\n".encode()
+        )
 
-        tracked = TrackedProcess(instance_id, proc)
+        try:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *args,
+                    stdout=log_file,
+                    stderr=asyncio.subprocess.STDOUT,  # merge stderr into the log file
+                    stdin=asyncio.subprocess.DEVNULL,
+                    # New process group so we can signal the whole tree if needed.
+                    start_new_session=True,
+                    env=env,
+                )
+            except FileNotFoundError as e:
+                await self._mark_terminal(instance_id, S_CRASHED, error=f"binary not found: {binary_path}")
+                raise ProcessError(f"Binary not found: {binary_path}") from e
+            except OSError as e:
+                await self._mark_terminal(instance_id, S_CRASHED, error=f"spawn error: {e}")
+                raise ProcessError(f"Failed to spawn binary: {e}") from e
+        finally:
+            # The child has its own dup'd fd; the parent can close its handle.
+            log_file.close()
+
+        tracked = TrackedProcess(instance_id, proc, log_path=log_path)
         async with self._lock:
             self._tracked[instance_id] = tracked
 
@@ -139,7 +167,8 @@ class ProcessManager:
             "UPDATE instances SET pid=?, status=? WHERE id=?",
             (proc.pid, S_RUNNING, instance_id),
         )
-        log.info("Spawned instance %d -> pid %d (%s)", instance_id, proc.pid, binary_path)
+        log.info("Spawned instance %d -> pid %d (%s) log=%s",
+                 instance_id, proc.pid, binary_path, log_path)
 
         # Waiter: reaps the process the moment it exits.
         tracked.waiter = asyncio.create_task(self._waiter(tracked))
@@ -148,12 +177,16 @@ class ProcessManager:
     def _build_command(self, binary_path: str, credentials: str, extra_args: str) -> list[str]:
         """Construct the argv for the binary.
 
-        `whitelist-bypass` typically takes its cookies/session via flags.
-        We pass:
-            <binary> --cookies <credentials> <extra_args...>
-        Tweak here if your build expects different flag names.
+        Cookie handling (see class docstring): a *file path* in `credentials`
+        is passed via ``-cookies <path>``; empty credentials emit no flag, so
+        binaries that take none (joiners) still work. Per-service `extra_args`
+        are appended verbatim — set a different flag there if a binary needs
+        e.g. ``-cookie-string`` instead.
         """
-        cmd = [binary_path, "--cookies", credentials]
+        cmd = [binary_path]
+        cred = (credentials or "").strip()
+        if cred:
+            cmd.extend([COOKIE_FLAG, cred])
         if extra_args and extra_args.strip():
             cmd.extend(shlex.split(extra_args))
         return cmd
@@ -170,12 +203,7 @@ class ProcessManager:
             # We were asked to stop tracking (shouldn't normally happen here).
             return
 
-        # Drain any buffered stdout/stderr so pipes don't leak.
-        for stream in (proc.stdout, proc.stderr):
-            if stream is not None:
-                with contextlib.suppress(Exception):
-                    await stream.read()
-
+        # stdout/stderr are redirected to a file (no pipes to drain).
         if tracked.kill_task and not tracked.kill_task.done():
             tracked.kill_task.cancel()
 
@@ -198,10 +226,31 @@ class ProcessManager:
             return  # already terminal (e.g. user stopped it)
 
         status = S_EXITED if code == 0 else S_CRASHED
+        # On crash, capture the tail of the log so the cause is visible in
+        # the UI without SSH'ing to read the full file.
+        error = None
+        if status == S_CRASHED:
+            error = self._read_log_tail(tracked.log_path)
         await self._mark_terminal(
-            tracked.instance_id, status, exit_code=code
+            tracked.instance_id, status, exit_code=code, error=error
         )
         log.info("Instance %d exited code=%s -> %s", tracked.instance_id, code, status)
+
+    @staticmethod
+    def _read_log_tail(log_path: Optional[Path]) -> Optional[str]:
+        """Return the last ERROR_TAIL_BYTES of a binary log, or None."""
+        if log_path is None or not log_path.exists():
+            return None
+        try:
+            size = log_path.stat().st_size
+            with open(log_path, "rb") as f:
+                if size > ERROR_TAIL_BYTES:
+                    f.seek(-ERROR_TAIL_BYTES, os.SEEK_END)
+                data = f.read()
+            text = data.decode("utf-8", errors="replace").strip()
+            return text or None
+        except OSError:
+            return None
 
     # ------------------------------------------------------------------ #
     # stop / kill
