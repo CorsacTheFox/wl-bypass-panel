@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import shlex
 import signal
 from datetime import datetime, timezone
@@ -38,6 +39,13 @@ from config import (
 from db import db
 
 log = logging.getLogger("process_manager")
+
+# Regex to extract the join_link from binary output.
+# All creator binaries emit:
+#   CALL CREATED
+#   join_link: <scheme>://<payload>
+# The scheme may be wbstream://, dion.vc/..., https://vk.com/call/..., tm://, etc.
+_RE_JOIN_LINK = re.compile(r"join_link:\s*(\S+)")
 
 # Statuses (must match the DB CHECK constraint)
 S_PENDING = "pending"
@@ -65,6 +73,7 @@ class TrackedProcess:
         self.proc = proc
         self.log_path = log_path
         self.waiter: asyncio.Task | None = None
+        self.tailer: asyncio.Task | None = None   # log scanner for output_link
         self.kill_task: asyncio.Task | None = None  # timeout enforcer
 
     @property
@@ -99,9 +108,14 @@ class ProcessManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reaper_task
             self._reaper_task = None
-        # Kill anything still alive.
+        # Cancel all tailers and kill anything still alive.
         ids = list(self._tracked.keys())
         for iid in ids:
+            t = self._tracked[iid]
+            if t.tailer and not t.tailer.done():
+                t.tailer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await t.tailer
             await self._kill(iid, reason="shutdown", timeout_status=False)
 
     # ------------------------------------------------------------------ #
@@ -172,6 +186,8 @@ class ProcessManager:
 
         # Waiter: reaps the process the moment it exits.
         tracked.waiter = asyncio.create_task(self._waiter(tracked))
+        # Tailer: scans the log for join_link and writes it to the DB.
+        tracked.tailer = asyncio.create_task(self._tailer(tracked))
         return proc.pid
 
     def _build_command(self, binary_path: str, credentials: str, extra_args: str) -> list[str]:
@@ -253,6 +269,55 @@ class ProcessManager:
             return None
 
     # ------------------------------------------------------------------ #
+    # log tailer — extracts join_link from binary output
+    # ------------------------------------------------------------------ #
+    async def _tailer(self, tracked: TrackedProcess) -> None:
+        """Periodically scan the instance log for a ``join_link:`` line.
+
+        All creator binaries emit something like::
+
+            CALL CREATED
+            join_link: wbstream://019ed925-...
+
+        Once found, the link is persisted to ``instances.output_link`` in the
+        DB and the tailer stops (no point rescanning). If the process exits
+        before a link appears the tailer simply ends — no error.
+        """
+        iid = tracked.instance_id
+        log_path = tracked.log_path
+        if log_path is None:
+            return
+        last_pos = 0  # byte offset into the log file
+        try:
+            while tracked.alive:
+                await asyncio.sleep(0.5)
+                try:
+                    size = log_path.stat().st_size
+                except OSError:
+                    continue
+                if size <= last_pos:
+                    continue  # nothing new
+                try:
+                    with open(log_path, "r", errors="replace") as f:
+                        f.seek(last_pos)
+                        new_data = f.read()
+                except OSError:
+                    continue
+                last_pos = size
+                # Scan for join_link: in newly-read text.
+                m = _RE_JOIN_LINK.search(new_data)
+                if m:
+                    link = m.group(1).strip()
+                    await db.execute(
+                        "UPDATE instances SET output_link=? WHERE id=?",
+                        (link, iid),
+                    )
+                    log.info("Instance %d: join_link found -> %s", iid, link)
+                    return  # done — link captured
+        except asyncio.CancelledError:
+            return  # process killed or shutdown — nothing to do
+
+    # ------------------------------------------------------------------ #
     # stop / kill
     # ------------------------------------------------------------------ #
     async def stop(self, instance_id: int) -> bool:
@@ -313,6 +378,10 @@ class ProcessManager:
             # Let the waiter finish; remove from tracked.
             async with self._lock:
                 self._tracked.pop(instance_id, None)
+            if tracked.tailer and not tracked.tailer.done():
+                tracked.tailer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await tracked.tailer
             if tracked.waiter and not tracked.waiter.done():
                 tracked.waiter.cancel()
                 with contextlib.suppress(asyncio.CancelledError):

@@ -15,12 +15,14 @@ Why a separate layer?
 """
 from __future__ import annotations
 
+import os
 import secrets
 import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import (
+    BINARIES_DIR,
     COOKIES_DIR,
     DEFAULT_MAX_CONCURRENT,
     DEFAULT_TIMEOUT_SECONDS,
@@ -167,7 +169,7 @@ class ServiceRegistry:
 
     async def list(self) -> list[dict]:
         rows = await db.fetchall(
-            "SELECT id, name, binary_path, extra_args, enabled, created_at FROM services ORDER BY id"
+            "SELECT id, name, binary_path, credentials, extra_args, enabled, created_at FROM services ORDER BY id"
         )
         return [dict(r) for r in rows]
 
@@ -299,6 +301,115 @@ cookies_store = CookiesStore()
 
 
 # --------------------------------------------------------------------------- #
+# Binaries — zip upload of headless-*-creator/joiner executables
+# --------------------------------------------------------------------------- #
+class BinariesError(Exception):
+    """Raised on a malformed binaries zip upload."""
+
+
+class BinariesStore:
+    """Manages the on-disk pool of headless-* binaries.
+
+    Admin uploads a zip (e.g. headless-wbstream-creator, headless-dion-joiner,
+    headless-vk-bot, ...). We extract every top-level regular file that matches
+    the ``headless-*`` or ``whitelist-bypass*`` naming convention into
+    BINARIES_DIR and expose them as a dropdown when creating/editing a Service.
+    """
+
+    # Only extract files matching these name prefixes (defensive — don't let
+    # an uploaded zip sprinkle arbitrary files into BINARIES_DIR).
+    _ALLOWED_PREFIXES = ("headless-", "whitelist-bypass", "wb-manager")
+
+    def list(self) -> list[dict]:
+        """All binaries currently on disk, newest first.
+
+        Skips non-executable placeholders like .gitkeep.
+        """
+        if not BINARIES_DIR.exists():
+            return []
+        files = sorted(
+            (p for p in BINARIES_DIR.iterdir()
+             if p.is_file() and p.name != ".gitkeep"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        out = []
+        for p in files:
+            st = p.stat()
+            out.append({
+                "name": p.name,
+                "path": str(p.resolve()),
+                "size": st.st_size,
+                "executable": os.access(p, os.X_OK),
+                "mtime": datetime.fromtimestamp(st.st_mtime, timezone.utc)
+                    .strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        return out
+
+    def save_zip(self, data: bytes, replace: bool = True) -> list[str]:
+        """Extract allowed binary members from an in-memory zip.
+
+        Only top-level files whose basename starts with one of the allowed
+        prefixes are extracted. Directories are skipped. Returns the list of
+        extracted filenames. Raises BinariesError on anything suspicious.
+        """
+        ensure_dirs()
+        import io, os
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as e:
+            raise BinariesError(f"not a valid zip file: {e}") from e
+
+        members = []
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            name = Path(info.filename).name  # flatten: basename only
+            if not any(name.startswith(prefix) for prefix in self._ALLOWED_PREFIXES):
+                continue
+            # Reject absolute / parent-traversal entries.
+            if info.filename.startswith("/") or ".." in Path(info.filename).parts:
+                raise BinariesError(f"unsafe path in zip: {info.filename}")
+            members.append((name, info))
+
+        if not members:
+            raise BinariesError(
+                "zip contained no matching binaries "
+                f"(expected names starting with: {', '.join(self._ALLOWED_PREFIXES)})"
+            )
+
+        extracted: list[str] = []
+        for name, info in members:
+            target = BINARIES_DIR / name
+            if target.exists() and not replace:
+                continue
+            with zf.open(info) as src, open(target, "wb") as dst:
+                dst.write(src.read())
+            # Make executable.
+            target.chmod(0o755)
+            extracted.append(name)
+        return extracted
+
+    def delete(self, name: str) -> None:
+        """Remove a single binary by filename."""
+        if "/" in name or "\\" in name or ".." in name:
+            raise BinariesError("invalid binary filename")
+        if not any(name.startswith(prefix) for prefix in self._ALLOWED_PREFIXES):
+            raise BinariesError("invalid binary filename")
+        target = (BINARIES_DIR / name).resolve()
+        try:
+            target.relative_to(BINARIES_DIR.resolve())
+        except ValueError as e:
+            raise BinariesError("invalid binary filename") from e
+        if not target.exists():
+            raise NotFoundError("binary not found")
+        target.unlink()
+
+
+binaries_store = BinariesStore()
+
+
+# --------------------------------------------------------------------------- #
 # Instances — enforces the max-3 concurrency rule
 # --------------------------------------------------------------------------- #
 class InstanceService:
@@ -312,7 +423,8 @@ class InstanceService:
     async def list_for_user(self, user_id: int, include_history: bool = False) -> list[dict]:
         sql = """
             SELECT i.id, i.user_id, i.service_id, s.name AS service_name,
-                   i.pid, i.status, i.started_at, i.ended_at, i.exit_code, i.error
+                   i.pid, i.status, i.started_at, i.ended_at, i.exit_code, i.error,
+                   i.output_link
               FROM instances i
               JOIN services s ON s.id = i.service_id
              WHERE i.user_id = ?
@@ -398,7 +510,8 @@ class InstanceService:
     async def _get(self, instance_id: int) -> dict:
         row = await db.fetchone(
             """SELECT i.id, i.user_id, i.service_id, s.name AS service_name,
-                      i.pid, i.status, i.started_at, i.ended_at, i.exit_code, i.error
+                      i.pid, i.status, i.started_at, i.ended_at, i.exit_code, i.error,
+                      i.output_link
                  FROM instances i JOIN services s ON s.id = i.service_id
                 WHERE i.id=?""",
             (instance_id,),

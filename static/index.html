@@ -222,6 +222,7 @@
               <tr class="text-gray-500 text-[11px] uppercase tracking-wider">
                 <th class="text-left font-medium px-5 py-2.5">ID</th>
                 <th class="text-left font-medium px-5 py-2.5">Service</th>
+                <th class="text-left font-medium px-5 py-2.5">Link</th>
                 <th class="text-left font-medium px-5 py-2.5">PID</th>
                 <th class="text-left font-medium px-5 py-2.5">Status</th>
                 <th class="text-left font-medium px-5 py-2.5">Started</th>
@@ -271,6 +272,11 @@
             <h2 class="text-white font-semibold text-sm">Services</h2>
             <div class="flex items-center gap-2">
               <input id="inp-cookies-zip" type="file" accept=".zip" class="hidden" />
+              <input id="inp-binaries-zip" type="file" accept=".zip" class="hidden" />
+              <button id="btn-upload-binaries" class="btn btn-ghost text-xs py-1.5" title="Upload a zip of headless-* binaries">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>
+                Upload binaries
+              </button>
               <button id="btn-upload-cookies" class="btn btn-ghost text-xs py-1.5" title="Upload a zip of cookies-*.json">
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 9l5-5 5 5M12 4v12"/></svg>
                 Upload cookies
@@ -306,6 +312,7 @@
                 <th class="text-left font-medium px-5 py-2.5">ID</th>
                 <th class="text-left font-medium px-5 py-2.5">Client</th>
                 <th class="text-left font-medium px-5 py-2.5">Service</th>
+                <th class="text-left font-medium px-5 py-2.5">Link</th>
                 <th class="text-left font-medium px-5 py-2.5">PID</th>
                 <th class="text-left font-medium px-5 py-2.5">Status</th>
                 <th class="text-left font-medium px-5 py-2.5">Started</th>
@@ -565,10 +572,25 @@ async function refreshDashboard() {
       $('#empty-instances').classList.remove('hidden');
     } else {
       $('#empty-instances').classList.add('hidden');
-      tbody.innerHTML = instances.map(i => `
+      tbody.innerHTML = instances.map(i => {
+        // Build the Link cell — show a copyable button once output_link appears.
+        let linkCell = '<span class="text-gray-600 text-xs">pending\u2026</span>';
+        if (i.output_link) {
+          linkCell = `
+            <button class="btn btn-ghost text-xs py-0.5 px-2 font-mono text-cyan-400 max-w-[200px] truncate"
+                    title="${esc(i.output_link)}"
+                    data-action="copy-link" data-link="${esc(i.output_link)}">
+              ${esc(i.output_link)}
+              <svg class="w-3 h-3 inline ml-1 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            </button>`;
+        } else if (isTerminal(i.status)) {
+          linkCell = '<span class="text-gray-600 text-xs">\u2014</span>';
+        }
+        return `
         <tr class="tbl-row">
           <td class="px-5 py-3 text-gray-500 font-mono text-xs">#${i.id}</td>
           <td class="px-5 py-3 text-white font-medium">${esc(i.service_name)}</td>
+          <td class="px-5 py-3">${linkCell}</td>
           <td class="px-5 py-3 font-mono text-gray-400 text-xs">${i.pid ?? '\u2014'}</td>
           <td class="px-5 py-3">${statusBadge(i.status)}</td>
           <td class="px-5 py-3 text-gray-400 text-xs">${fmtTime(i.started_at)}</td>
@@ -578,7 +600,8 @@ async function refreshDashboard() {
               : `<button class="btn btn-danger text-xs py-1 px-3" data-action="stop" data-id="${i.id}">Stop</button>`
             }
           </td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
     }
 
     // Clear any stale messages
@@ -623,6 +646,17 @@ $('#btn-start').addEventListener('click', async () => {
 $('#btn-refresh').addEventListener('click', refreshDashboard);
 
 document.addEventListener('click', async (e) => {
+  // Copy link to clipboard
+  const copyBtn = e.target.closest('[data-action="copy-link"]');
+  if (copyBtn) {
+    const link = copyBtn.dataset.link;
+    try {
+      await navigator.clipboard.writeText(link);
+      toast('Link copied to clipboard');
+    } catch { toast('Copy failed', 'err'); }
+    return;
+  }
+  // Stop instance
   const btn = e.target.closest('[data-action="stop"]');
   if (!btn) return;
   const id = btn.dataset.id;
@@ -676,6 +710,7 @@ async function refreshAdmin() {
       <tr class="tbl-row">
         <td class="px-5 py-3 text-white font-medium">${esc(s.name)}</td>
         <td class="px-5 py-3 font-mono text-gray-500 text-xs truncate max-w-[180px]" title="${esc(s.binary_path)}">${esc(s.binary_path)}</td>
+        <td class="px-5 py-3 font-mono text-gray-500 text-xs truncate max-w-[160px]" title="${esc(s.credentials)}">${s.credentials ? cookiesBasename(s.credentials) : '<span class="text-gray-600">\u2014</span>'}</td>
         <td class="px-5 py-3">
           <span class="badge" style="color:${s.enabled ? '#22c55e' : '#6b7280'};background:${s.enabled ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)'}">
             <span class="dot" style="background:${s.enabled ? '#22c55e' : '#6b7280'}"></span>
@@ -690,17 +725,25 @@ async function refreshAdmin() {
 
     // --- Overview table ---
     if (overview.live.length === 0) {
-      $('#tbody-overview').innerHTML = '<tr><td colspan="6" class="px-5 py-10 text-center text-gray-600 text-sm">No live instances across all clients</td></tr>';
+      $('#tbody-overview').innerHTML = '<tr><td colspan="7" class="px-5 py-10 text-center text-gray-600 text-sm">No live instances across all clients</td></tr>';
     } else {
-      $('#tbody-overview').innerHTML = overview.live.map(i => `
+      $('#tbody-overview').innerHTML = overview.live.map(i => {
+        const linkTxt = i.output_link
+          ? `<button class="btn btn-ghost text-xs py-0.5 px-2 font-mono text-cyan-400 max-w-[200px] truncate"
+                    title="${esc(i.output_link)}"
+                    data-action="copy-link" data-link="${esc(i.output_link)}">${esc(i.output_link)}</button>`
+          : '<span class="text-gray-600 text-xs">pending\u2026</span>';
+        return `
         <tr class="tbl-row">
           <td class="px-5 py-3 text-gray-500 font-mono text-xs">#${i.id}</td>
           <td class="px-5 py-3 text-white">${esc(i.username)}</td>
           <td class="px-5 py-3 text-gray-300">${esc(i.service_name)}</td>
+          <td class="px-5 py-3">${linkTxt}</td>
           <td class="px-5 py-3 font-mono text-gray-400 text-xs">${i.pid ?? '\u2014'}</td>
           <td class="px-5 py-3">${statusBadge(i.status)}</td>
           <td class="px-5 py-3 text-gray-400 text-xs">${fmtTime(i.started_at)}</td>
-        </tr>`).join('');
+        </tr>`;
+      }).join('');
     }
 
   } catch (err) {
@@ -737,6 +780,29 @@ document.addEventListener('click', async (e) => {
 
 $('#btn-new-client').addEventListener('click', () => openClientModal());
 $('#btn-new-service').addEventListener('click', () => openServiceModal());
+
+/* --- Binaries zip upload (admin) --- */
+$('#btn-upload-binaries').addEventListener('click', () => $('#inp-binaries-zip').click());
+$('#inp-binaries-zip').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const res = await fetch('/api/admin/binaries', {
+      method: 'POST',
+      headers: api.token ? { Authorization: 'Bearer ' + api.token } : {},
+      body: form,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.detail || `upload failed (${res.status})`);
+    const names = (body.extracted || []).join(', ') || 'nothing new';
+    toast(`Binaries extracted: ${names}`);
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
 
 /* --- Cookies zip upload (admin) --- */
 $('#btn-upload-cookies').addEventListener('click', () => $('#inp-cookies-zip').click());
@@ -856,72 +922,100 @@ function openClientModal(c = {}) {
 /* --- Service modal --- */
 async function openServiceModal(s = {}) {
   const isEdit = !!s.id;
-  // Fetch the cookies dropdown options (cookies-*.json uploaded by admin).
-  let cookies = [];
-  try { cookies = await api.get('/api/admin/cookies'); }
-  catch (e) { /* admin only; ignore if unreachable */ }
+  // Fetch both dropdown options in parallel.
+  let [binaries, cookies] = [[], []];
+  try {
+    [binaries, cookies] = await Promise.all([
+      api.get('/api/admin/binaries'),
+      api.get('/api/admin/cookies'),
+    ]);
+  } catch (e) { /* admin only; ignore */ }
+
+  // --- Binary dropdown ---
+  const binOpts = binaries.map(b => {
+    const label = `${esc(b.name)}${b.executable ? '' : ' (!x)'}`;
+    return `<option value=”${esc(b.path)}” ${s.binary_path === b.path ? 'selected' : ''}>${label}</option>`;
+  }).join('');
+  const binManualSelected = s.binary_path && !binaries.some(b => b.path === s.binary_path);
+
+  // --- Cookies dropdown ---
   const cookieOpts = cookies.map(c =>
-    `<option value="${esc(c.path)}" ${s.credentials === c.path ? 'selected' : ''}>${esc(c.name)} (${c.size} B)</option>`
+    `<option value=”${esc(c.path)}” ${s.credentials === c.path ? 'selected' : ''}>${esc(c.name)} (${c.size} B)</option>`
   ).join('');
-  const manualSelected = s.credentials && !cookies.some(c => c.path === s.credentials);
+  const cookieManualSelected = s.credentials && !cookies.some(c => c.path === s.credentials);
 
   openModal(`
-    <h3 class="text-white font-semibold text-base mb-5">${isEdit ? 'Edit Service' : 'Create Service'}</h3>
-    <form id="modal-form" class="space-y-4">
+    <h3 class=”text-white font-semibold text-base mb-5”>${isEdit ? 'Edit Service' : 'Create Service'}</h3>
+    <form id=”modal-form” class=”space-y-4”>
       <div>
-        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service Name</label>
-        <input id="mf-name" class="input-field" value="${esc(s.name)}" required />
+        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Service Name</label>
+        <input id=”mf-name” class=”input-field” value=”${esc(s.name)}” required />
       </div>
       <div>
-        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Binary Path (server-side)</label>
-        <input id="mf-binary" class="input-field font-mono text-xs" value="${esc(s.binary_path)}" placeholder="./binaries/headless-wbstream-creator" required />
-      </div>
-      <div>
-        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Cookies file (path passed to the binary as -cookies)</label>
-        <select id="mf-cookies-select" class="input-field font-mono text-xs">
-          <option value="">— none (binary takes no cookies) —</option>
-          ${cookieOpts}
-          <option value="__manual__" ${manualSelected ? 'selected' : ''}>— manual path below —</option>
+        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Binary</label>
+        <select id=”mf-binary-select” class=”input-field font-mono text-xs”>
+          <option value=””>— select a binary —</option>
+          ${binOpts}
+          <option value=”__manual__” ${binManualSelected ? 'selected' : ''}>— manual path below —</option>
         </select>
-        <input id="mf-cookies-manual" class="input-field font-mono text-xs mt-2 ${manualSelected ? '' : 'hidden'}"
-               value="${manualSelected ? esc(s.credentials) : ''}" placeholder="/opt/.../data/cookies/cookies-wbstream.json" />
-        <p class="text-[10px] text-gray-600 mt-1">Upload more via the “Upload cookies” button on the Services card.</p>
+        <input id=”mf-binary-manual” class=”input-field font-mono text-xs mt-2 ${binManualSelected ? '' : 'hidden'}”
+               value=”${binManualSelected ? esc(s.binary_path) : ''}” placeholder=”./binaries/headless-wbstream-creator” />
+        <p class=”text-[10px] text-gray-600 mt-1”>Upload binaries via the “Upload binaries” button above.</p>
       </div>
       <div>
-        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Extra Args (optional)</label>
-        <input id="mf-extra" class="input-field font-mono text-xs" value="${esc(s.extra_args || '')}" placeholder="--resources moderate" />
+        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Cookies file (path passed to the binary as -cookies)</label>
+        <select id=”mf-cookies-select” class=”input-field font-mono text-xs”>
+          <option value=””>— none (binary takes no cookies) —</option>
+          ${cookieOpts}
+          <option value=”__manual__” ${cookieManualSelected ? 'selected' : ''}>— manual path below —</option>
+        </select>
+        <input id=”mf-cookies-manual” class=”input-field font-mono text-xs mt-2 ${cookieManualSelected ? '' : 'hidden'}”
+               value=”${cookieManualSelected ? esc(s.credentials) : ''}” placeholder=”/opt/.../data/cookies/cookies-wbstream.json” />
+        <p class=”text-[10px] text-gray-600 mt-1”>Upload more via the “Upload cookies” button above.</p>
       </div>
-      <label class="flex items-center gap-2.5 cursor-pointer">
-        <input id="mf-svc-enabled" type="checkbox" ${s.enabled !== false ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
-        <span class="text-sm text-gray-300">Enabled</span>
+      <div>
+        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Extra Args (optional)</label>
+        <input id=”mf-extra” class=”input-field font-mono text-xs” value=”${esc(s.extra_args || '')}” placeholder=”--resources moderate” />
+      </div>
+      <label class=”flex items-center gap-2.5 cursor-pointer”>
+        <input id=”mf-svc-enabled” type=”checkbox” ${s.enabled !== false ? 'checked' : ''} class=”w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600” />
+        <span class=”text-sm text-gray-300”>Enabled</span>
       </label>
-      <div class="flex gap-3 pt-2">
-        <button type="submit" class="btn btn-primary flex-1">${isEdit ? 'Save Changes' : 'Create Service'}</button>
-        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <div class=”flex gap-3 pt-2”>
+        <button type=”submit” class=”btn btn-primary flex-1”>${isEdit ? 'Save Changes' : 'Create Service'}</button>
+        <button type=”button” class=”btn btn-ghost” onclick=”closeModal()”>Cancel</button>
       </div>
     </form>
   `);
 
-  // Toggle the manual-path input visibility based on the dropdown choice.
-  const sel = $('#mf-cookies-select');
-  const man = $('#mf-cookies-manual');
-  sel.addEventListener('change', () => {
-    if (sel.value === '__manual__') man.classList.remove('hidden');
-    else man.classList.add('hidden');
+  // Toggle manual-path inputs based on dropdown choices.
+  const binSel = $('#mf-binary-select');
+  const binMan = $('#mf-binary-manual');
+  binSel.addEventListener('change', () => {
+    binMan.classList.toggle('hidden', binSel.value !== '__manual__');
+  });
+  const cookieSel = $('#mf-cookies-select');
+  const cookieMan = $('#mf-cookies-manual');
+  cookieSel.addEventListener('change', () => {
+    cookieMan.classList.toggle('hidden', cookieSel.value !== '__manual__');
   });
 
   $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('[type="submit"]');
+    const btn = e.target.querySelector('[type=”submit”]');
     btn.disabled = true;
-    // Resolve the final cookies path from the dropdown / manual field.
+    // Resolve binary path from dropdown / manual.
+    let binaryPath = '';
+    if (binSel.value === '__manual__') binaryPath = binMan.value.trim();
+    else binaryPath = binSel.value;
+    // Resolve cookies path from dropdown / manual.
     let cookiesPath = '';
-    if (sel.value === '__manual__') cookiesPath = man.value.trim();
-    else cookiesPath = sel.value;
+    if (cookieSel.value === '__manual__') cookiesPath = cookieMan.value.trim();
+    else cookiesPath = cookieSel.value;
     const payload = {
       name: $('#mf-name').value,
-      binary_path: $('#mf-binary').value,
-      credentials: cookiesPath,   // a file PATH (or empty) — not raw content
+      binary_path: binaryPath,
+      credentials: cookiesPath,
       extra_args: $('#mf-extra').value,
       enabled: $('#mf-svc-enabled').checked,
     };

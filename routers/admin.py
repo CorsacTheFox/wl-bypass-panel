@@ -1,4 +1,4 @@
-"""Admin routes: CRUD for clients, CRUD for services, cookies uploads, global view."""
+"""Admin routes: CRUD for clients, CRUD for services, cookies & binaries uploads, global view."""
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field
 from config import DEFAULT_MAX_CONCURRENT
 from security import require_admin
 from services import (
+    BinariesError,
     CookiesError,
     NotFoundError,
+    binaries_store,
     cookies_store,
     instance_service,
     service_registry,
@@ -180,6 +182,59 @@ async def delete_cookies(name: str):
 
 
 # --------------------------------------------------------------------------- #
+# Binaries (uploaded as a zip of headless-*-creator, headless-*-joiner, etc.)
+# --------------------------------------------------------------------------- #
+# Hard cap on a single binaries zip. Go binaries are typically 5-15 MB each,
+# so 200 MB allows for a generous archive (up to ~20 binaries).
+BINARIES_ZIP_MAX_BYTES = 200 * 1024 * 1024
+
+
+@router.get("/binaries")
+async def list_binaries():
+    """List all binaries available for use as a service's binary_path."""
+    return binaries_store.list()
+
+
+@router.post("/binaries", status_code=status.HTTP_201_CREATED)
+async def upload_binaries(file: UploadFile = File(...)):
+    """Upload a zip of headless-* and whitelist-bypass binaries.
+
+    Example zip contents:
+        headless-wbstream-creator
+        headless-wbstream-joiner
+        headless-dion-creator
+        headless-vk-bot
+        ...
+    """
+    data = await file.read()
+    if len(data) > BINARIES_ZIP_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"zip too large: {len(data)} bytes "
+                   f"(max {BINARIES_ZIP_MAX_BYTES})",
+        )
+    if not data:
+        raise HTTPException(status_code=400, detail="empty upload")
+    try:
+        extracted = binaries_store.save_zip(data)
+    except BinariesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True, "extracted": extracted, "all": binaries_store.list()}
+
+
+@router.delete("/binaries/{name}")
+async def delete_binary(name: str):
+    """Delete a single binary by filename."""
+    try:
+        binaries_store.delete(name)
+    except NotFoundError:
+        raise HTTPException(status_code=404, detail="binary not found")
+    except BinariesError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
 # Global overview (live instances across all users)
 # --------------------------------------------------------------------------- #
 @router.get("/overview")
@@ -187,7 +242,7 @@ async def overview():
     from db import db
     rows = await db.fetchall(
         """SELECT i.id, i.user_id, u.username, s.name AS service_name,
-                  i.pid, i.status, i.started_at
+                  i.pid, i.status, i.started_at, i.output_link
              FROM instances i
              JOIN users u ON u.id = i.user_id
              JOIN services s ON s.id = i.service_id

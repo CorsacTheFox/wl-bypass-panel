@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS instances (
     exit_code    INTEGER,
     timeout_at   TEXT,                          -- absolute datetime the instance should be killed
     error        TEXT,
+    output_link  TEXT,                          -- join_link extracted from binary stdout (e.g. wbstream://...)
     FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
     FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE RESTRICT
 );
@@ -71,6 +72,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
+# Safe migration: add output_link column to an existing instances table that
+# was created before this column existed. SQLite supports ALTER TABLE ADD
+# COLUMN if the column is not already present; we guard with a pragma check.
+_MIGRATION_ADD_OUTPUT_LINK = """
+PRAGMA table_info(instances);
+"""
+
+
+class Database:
+    """Thin async wrapper around a single aiosqlite connection."""
+
 
 class Database:
     """Thin async wrapper around a single aiosqlite connection."""
@@ -86,6 +98,13 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL;")
         await self._conn.execute("PRAGMA foreign_keys=ON;")
         await self._conn.executescript(SCHEMA_SQL)
+        # Migration: add output_link column if missing (safe to re-run).
+        columns = [
+            row[1] async for row in
+            await self._conn.execute_fetchall("PRAGMA table_info(instances)")
+        ]
+        if "output_link" not in columns:
+            await self._conn.execute("ALTER TABLE instances ADD COLUMN output_link TEXT")
         await self._conn.commit()
 
     async def close(self) -> None:
