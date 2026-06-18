@@ -934,56 +934,56 @@ async function openServiceModal(s = {}) {
   // --- Binary dropdown ---
   const binOpts = binaries.map(b => {
     const label = `${esc(b.name)}${b.executable ? '' : ' (!x)'}`;
-    return `<option value=”${esc(b.path)}” ${s.binary_path === b.path ? 'selected' : ''}>${label}</option>`;
+    return `<option value="${esc(b.path)}" ${s.binary_path === b.path ? 'selected' : ''}>${label}</option>`;
   }).join('');
   const binManualSelected = s.binary_path && !binaries.some(b => b.path === s.binary_path);
 
   // --- Cookies dropdown ---
   const cookieOpts = cookies.map(c =>
-    `<option value=”${esc(c.path)}” ${s.credentials === c.path ? 'selected' : ''}>${esc(c.name)} (${c.size} B)</option>`
+    `<option value="${esc(c.path)}" ${s.credentials === c.path ? 'selected' : ''}>${esc(c.name)} (${c.size} B)</option>`
   ).join('');
   const cookieManualSelected = s.credentials && !cookies.some(c => c.path === s.credentials);
 
   openModal(`
-    <h3 class=”text-white font-semibold text-base mb-5”>${isEdit ? 'Edit Service' : 'Create Service'}</h3>
-    <form id=”modal-form” class=”space-y-4”>
+    <h3 class="text-white font-semibold text-base mb-5">${isEdit ? 'Edit Service' : 'Create Service'}</h3>
+    <form id="modal-form" class="space-y-4">
       <div>
-        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Service Name</label>
-        <input id=”mf-name” class=”input-field” value=”${esc(s.name)}” required />
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service Name</label>
+        <input id="mf-name" class="input-field" value="${esc(s.name)}" required />
       </div>
       <div>
-        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Binary</label>
-        <select id=”mf-binary-select” class=”input-field font-mono text-xs”>
-          <option value=””>— select a binary —</option>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Binary</label>
+        <select id="mf-binary-select" class="input-field font-mono text-xs">
+          <option value="">— select a binary —</option>
           ${binOpts}
-          <option value=”__manual__” ${binManualSelected ? 'selected' : ''}>— manual path below —</option>
+          <option value="__manual__" ${binManualSelected ? 'selected' : ''}>— manual path below —</option>
         </select>
-        <input id=”mf-binary-manual” class=”input-field font-mono text-xs mt-2 ${binManualSelected ? '' : 'hidden'}”
-               value=”${binManualSelected ? esc(s.binary_path) : ''}” placeholder=”./binaries/headless-wbstream-creator” />
-        <p class=”text-[10px] text-gray-600 mt-1”>Upload binaries via the “Upload binaries” button above.</p>
+        <input id="mf-binary-manual" class="input-field font-mono text-xs mt-2 ${binManualSelected ? '' : 'hidden'}"
+               value="${binManualSelected ? esc(s.binary_path) : ''}" placeholder="./binaries/headless-wbstream-creator" />
+        <p class="text-[10px] text-gray-600 mt-1">Upload binaries via the “Upload binaries” button above.</p>
       </div>
       <div>
-        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Cookies file (path passed to the binary as -cookies)</label>
-        <select id=”mf-cookies-select” class=”input-field font-mono text-xs”>
-          <option value=””>— none (binary takes no cookies) —</option>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Cookies file (path passed to the binary as -cookies)</label>
+        <select id="mf-cookies-select" class="input-field font-mono text-xs">
+          <option value="">— none (binary takes no cookies) —</option>
           ${cookieOpts}
-          <option value=”__manual__” ${cookieManualSelected ? 'selected' : ''}>— manual path below —</option>
+          <option value="__manual__" ${cookieManualSelected ? 'selected' : ''}>— manual path below —</option>
         </select>
-        <input id=”mf-cookies-manual” class=”input-field font-mono text-xs mt-2 ${cookieManualSelected ? '' : 'hidden'}”
-               value=”${cookieManualSelected ? esc(s.credentials) : ''}” placeholder=”/opt/.../data/cookies/cookies-wbstream.json” />
-        <p class=”text-[10px] text-gray-600 mt-1”>Upload more via the “Upload cookies” button above.</p>
+        <input id="mf-cookies-manual" class="input-field font-mono text-xs mt-2 ${cookieManualSelected ? '' : 'hidden'}"
+               value="${cookieManualSelected ? esc(s.credentials) : ''}" placeholder="/opt/.../data/cookies/cookies-wbstream.json" />
+        <p class="text-[10px] text-gray-600 mt-1">Upload more via the “Upload cookies” button above.</p>
       </div>
       <div>
-        <label class=”block text-xs text-gray-500 mb-1.5 font-medium”>Extra Args (optional)</label>
-        <input id=”mf-extra” class=”input-field font-mono text-xs” value=”${esc(s.extra_args || '')}” placeholder=”--resources moderate” />
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Extra Args (optional)</label>
+        <input id="mf-extra" class="input-field font-mono text-xs" value="${esc(s.extra_args || '')}" placeholder="--resources moderate" />
       </div>
-      <label class=”flex items-center gap-2.5 cursor-pointer”>
-        <input id=”mf-svc-enabled” type=”checkbox” ${s.enabled !== false ? 'checked' : ''} class=”w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600” />
-        <span class=”text-sm text-gray-300”>Enabled</span>
+      <label class="flex items-center gap-2.5 cursor-pointer">
+        <input id="mf-svc-enabled" type="checkbox" ${s.enabled !== false ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+        <span class="text-sm text-gray-300">Enabled</span>
       </label>
-      <div class=”flex gap-3 pt-2”>
-        <button type=”submit” class=”btn btn-primary flex-1”>${isEdit ? 'Save Changes' : 'Create Service'}</button>
-        <button type=”button” class=”btn btn-ghost” onclick=”closeModal()”>Cancel</button>
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn btn-primary flex-1">${isEdit ? 'Save Changes' : 'Create Service'}</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
       </div>
     </form>
   `);
@@ -1002,7 +1002,7 @@ async function openServiceModal(s = {}) {
 
   $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('[type=”submit”]');
+    const btn = e.target.querySelector('[type="submit"]');
     btn.disabled = true;
     // Resolve binary path from dropdown / manual.
     let binaryPath = '';
