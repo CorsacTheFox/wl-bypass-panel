@@ -99,10 +99,8 @@ class Database:
         await self._conn.execute("PRAGMA foreign_keys=ON;")
         await self._conn.executescript(SCHEMA_SQL)
         # Migration: add output_link column if missing (safe to re-run).
-        columns = [
-            row[1] async for row in
-            await self._conn.execute_fetchall("PRAGMA table_info(instances)")
-        ]
+        rows = await self._conn.execute_fetchall("PRAGMA table_info(instances)")
+        columns = [row[1] for row in rows]
         if "output_link" not in columns:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN output_link TEXT")
         await self._conn.commit()
