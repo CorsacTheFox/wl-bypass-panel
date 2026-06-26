@@ -65,6 +65,11 @@ SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                       # the project root
 [[ $EUID -eq 0 ]] || die "Run as root: sudo bash $0"
 [[ -f "$SRC_DIR/main.py" ]] || die "Could not find app at $SRC_DIR/main.py"
 
+# Core paths (needed early for update detection).
+APP_DIR="${APP_DIR:-/opt/whitelist-manager}"
+SERVICE_USER="${SERVICE_USER:-wb-manager}"
+SERVICE_NAME="wb-manager"
+
 # Detect whether we can prompt interactively.
 INTERACTIVE=0
 if [[ -t 0 ]] && [[ -t 1 ]]; then INTERACTIVE=1; fi
@@ -112,9 +117,6 @@ PROXYCHAINS_ENABLED="${PROXYCHAINS_ENABLED:-}"
 PROXYCHAINS_TYPE="${PROXYCHAINS_TYPE:-socks5}"
 PROXYCHAINS_HOST="${PROXYCHAINS_HOST:-}"
 PROXYCHAINS_PORT="${PROXYCHAINS_PORT:-}"
-APP_DIR="${APP_DIR:-/opt/whitelist-manager}"
-SERVICE_USER="${SERVICE_USER:-wb-manager}"
-SERVICE_NAME="wb-manager"
 
 # When updating, seed defaults from the existing .env so the user can just
 # press Enter through all prompts without re-entering everything.
