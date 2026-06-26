@@ -117,10 +117,11 @@ class Database:
         # Migration: change instances.service_id FK from RESTRICT to CASCADE.
         # SQLite cannot ALTER constraints, so we check the sql schema and
         # recreate the table if it still has RESTRICT.
-        fk_row = await self._conn.fetchone(
+        fk_rows = await self._conn.execute_fetchall(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='instances'"
         )
-        if fk_row and "ON DELETE RESTRICT" in (fk_row["sql"] or ""):
+        fk_sql = fk_rows[0]["sql"] if fk_rows else ""
+        if fk_sql and "ON DELETE RESTRICT" in fk_sql:
             log.warning("Migrating instances FK from RESTRICT to CASCADE …")
             await self._conn.execute("PRAGMA foreign_keys=OFF")
             await self._conn.execute("ALTER TABLE instances RENAME TO _instances_old")
