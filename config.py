@@ -42,9 +42,36 @@ PBKDF2_ITERATIONS = 200_000
 # When empty (default), the /quick route is disabled.
 QUICK_TOKEN = os.getenv("WB_QUICK_TOKEN", "")
 
+# Proxychains4 global proxy. When enabled, all instances are launched through
+# proxychains4 using an auto-generated config file.
+PROXYCHAINS_ENABLED = os.getenv("WB_PROXYCHAINS_ENABLED", "").lower() in ("1", "true", "yes")
+PROXYCHAINS_TYPE = os.getenv("WB_PROXYCHAINS_TYPE", "socks5")  # socks5, socks4, http
+PROXYCHAINS_HOST = os.getenv("WB_PROXYCHAINS_HOST", "")         # e.g. 127.0.0.1
+PROXYCHAINS_PORT = os.getenv("WB_PROXYCHAINS_PORT", "")         # e.g. 1080
+PROXYCHAINS_CONF_PATH = DATA_DIR / "proxychains.conf"
+
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     BINARIES_DIR.mkdir(parents=True, exist_ok=True)
     COOKIES_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_proxychains_conf() -> None:
+    """Generate proxychains.conf if proxychains is enabled and config is valid."""
+    if not PROXYCHAINS_ENABLED:
+        return
+    if not PROXYCHAINS_HOST or not PROXYCHAINS_PORT:
+        return
+    conf = (
+        "strict_chain\n"
+        "proxy_dns\n"
+        "remote_dns_subnet 224\n"
+        "tcp_read_time_out 15000\n"
+        "tcp_connect_time_out 8000\n"
+        "\n"
+        "[ProxyList]\n"
+        f"{PROXYCHAINS_TYPE} {PROXYCHAINS_HOST} {PROXYCHAINS_PORT}\n"
+    )
+    PROXYCHAINS_CONF_PATH.write_text(conf, encoding="utf-8")

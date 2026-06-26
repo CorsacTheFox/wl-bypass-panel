@@ -34,6 +34,8 @@ from config import (
     ERROR_TAIL_BYTES,
     LOGS_DIR,
     PROCESS_KILL_GRACE_SECONDS,
+    PROXYCHAINS_ENABLED,
+    PROXYCHAINS_CONF_PATH,
     REAPER_INTERVAL_SECONDS,
 )
 from db import db
@@ -198,6 +200,10 @@ class ProcessManager:
         binaries that take none (joiners) still work. Per-service `extra_args`
         are appended verbatim — set a different flag there if a binary needs
         e.g. ``-cookie-string`` instead.
+
+        When proxychains4 is enabled globally (config.PROXYCHAINS_ENABLED) and
+        the auto-generated config file exists, the command is wrapped with
+        ``proxychains4 -f <conf_path>``.
         """
         cmd = [binary_path]
         cred = (credentials or "").strip()
@@ -205,6 +211,11 @@ class ProcessManager:
             cmd.extend([COOKIE_FLAG, cred])
         if extra_args and extra_args.strip():
             cmd.extend(shlex.split(extra_args))
+
+        # Wrap with proxychains4 if globally enabled.
+        if PROXYCHAINS_ENABLED and PROXYCHAINS_CONF_PATH.exists():
+            cmd = ["proxychains4", "-f", str(PROXYCHAINS_CONF_PATH)] + cmd
+
         return cmd
 
     # ------------------------------------------------------------------ #
