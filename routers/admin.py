@@ -25,7 +25,12 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 # --------------------------------------------------------------------------- #
 class ClientCreate(BaseModel):
     username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=6, max_length=128)
+    password: str | None = Field(default=None, min_length=6, max_length=128)
+    max_concurrent: int = Field(default=DEFAULT_MAX_CONCURRENT, ge=0, le=10)
+
+
+class BulkCreateIn(BaseModel):
+    usernames: str  # comma-separated list
     max_concurrent: int = Field(default=DEFAULT_MAX_CONCURRENT, ge=0, le=10)
 
 
@@ -48,6 +53,15 @@ async def create_client(body: ClientCreate):
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.post("/clients/bulk", status_code=status.HTTP_201_CREATED)
+async def create_clients_bulk(body: BulkCreateIn):
+    usernames = [u.strip() for u in body.usernames.split(",") if u.strip()]
+    if not usernames:
+        raise HTTPException(status_code=400, detail="no usernames provided")
+    result = await user_service.create_clients_bulk(usernames, body.max_concurrent)
+    return result
 
 
 @router.patch("/clients/{client_id}")

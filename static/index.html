@@ -120,7 +120,7 @@
         </div>
         <div>
           <label class="block text-xs text-gray-500 mb-1.5 font-medium">Password</label>
-          <input id="inp-pass" type="password" class="input-field" placeholder="Enter password" autocomplete="current-password" required />
+          <input id="inp-pass" type="password" class="input-field" placeholder="Enter password (or anything if none set)" autocomplete="current-password" />
         </div>
         <div id="login-error" class="hidden text-red-400 text-xs bg-red-400/10 rounded-lg px-3 py-2"></div>
         <button id="btn-login" type="submit" class="btn btn-primary w-full py-2.5">
@@ -129,6 +129,41 @@
       </form>
     </div>
     <p class="text-gray-600 text-xs text-center mt-4">Instance Manager v1.0</p>
+  </div>
+</div>
+
+<!-- =====================================================================
+     SET PASSWORD PAGE (shown after login when must_change_password=true)
+     ===================================================================== -->
+<div id="page-password-change" class="hidden min-h-screen flex items-center justify-center px-4">
+  <div class="w-full max-w-sm anim-fade">
+    <div class="flex items-center justify-center gap-3 mb-8">
+      <div class="w-11 h-11 rounded-xl bg-yellow-600 flex items-center justify-center shadow-lg shadow-yellow-600/20">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+        </svg>
+      </div>
+    </div>
+    <div class="card p-7">
+      <h1 class="text-white text-xl font-semibold text-center mb-1">Set your password</h1>
+      <p class="text-gray-500 text-sm text-center mb-6">Choose a password to secure your account</p>
+
+      <form id="form-password-change" class="space-y-4">
+        <div>
+          <label class="block text-xs text-gray-500 mb-1.5 font-medium">New Password</label>
+          <input id="inp-new-pw" type="password" class="input-field" placeholder="Min. 6 characters" autocomplete="new-password" required minlength="6" />
+        </div>
+        <div>
+          <label class="block text-xs text-gray-500 mb-1.5 font-medium">Confirm Password</label>
+          <input id="inp-new-pw-confirm" type="password" class="input-field" placeholder="Repeat password" autocomplete="new-password" required minlength="6" />
+        </div>
+        <div id="pw-change-error" class="hidden text-red-400 text-xs bg-red-400/10 rounded-lg px-3 py-2"></div>
+        <button id="btn-pw-change" type="submit" class="btn btn-primary w-full py-2.5">
+          Set Password
+        </button>
+      </form>
+    </div>
+    <p class="text-gray-600 text-xs text-center mt-4">You will be logged out after setting your password</p>
   </div>
 </div>
 
@@ -255,10 +290,16 @@
         <div class="card overflow-hidden">
           <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
             <h2 class="text-white font-semibold text-sm">Clients</h2>
-            <button id="btn-new-client" class="btn btn-primary text-xs py-1.5">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
-              New Client
-            </button>
+            <div class="flex items-center gap-2">
+              <button id="btn-bulk-create" class="btn btn-ghost text-xs py-1.5" title="Create multiple clients at once">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                Bulk
+              </button>
+              <button id="btn-new-client" class="btn btn-primary text-xs py-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+                New Client
+              </button>
+            </div>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
@@ -440,6 +481,7 @@ function isTerminal(status) {
 function renderLogin() {
   $('#page-login').classList.remove('hidden');
   $('#page-app').classList.add('hidden');
+  $('#page-password-change').classList.add('hidden');
   $('#inp-user').value = '';
   $('#inp-pass').value = '';
   $('#login-error').classList.add('hidden');
@@ -475,6 +517,49 @@ $('#btn-logout').addEventListener('click', () => {
 });
 
 /* =========================================================================
+   PASSWORD CHANGE (first-login flow)
+   ========================================================================= */
+$('#form-password-change').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const errEl = $('#pw-change-error');
+  const btnEl = $('#btn-pw-change');
+  const pw = $('#inp-new-pw').value;
+  const pwConfirm = $('#inp-new-pw-confirm').value;
+  errEl.classList.add('hidden');
+
+  if (pw !== pwConfirm) {
+    errEl.textContent = 'Passwords do not match';
+    errEl.classList.remove('hidden');
+    return;
+  }
+  if (pw.length < 6) {
+    errEl.textContent = 'Password must be at least 6 characters';
+    errEl.classList.remove('hidden');
+    return;
+  }
+
+  btnEl.disabled = true;
+  btnEl.textContent = 'Saving\u2026';
+  try {
+    await api.post('/api/auth/change-password', { new_password: pw });
+    toast('Password set successfully');
+    // Logout and redirect to login so user can sign in with new password
+    await api.post('/api/auth/logout').catch(() => {});
+    api.logout();
+    renderLogin();
+    // Clear password fields
+    $('#inp-new-pw').value = '';
+    $('#inp-new-pw-confirm').value = '';
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.classList.remove('hidden');
+  } finally {
+    btnEl.disabled = false;
+    btnEl.textContent = 'Set Password';
+  }
+});
+
+/* =========================================================================
    BOOTSTRAP: after successful login
    ========================================================================= */
 async function bootstrap() {
@@ -483,6 +568,15 @@ async function bootstrap() {
   } catch { api.logout(); return; }
 
   $('#page-login').classList.add('hidden');
+
+  // If password must be changed, show password-change screen instead of app
+  if (currentUser.must_change_password) {
+    $('#page-password-change').classList.remove('hidden');
+    $('#page-app').classList.add('hidden');
+    return;
+  }
+
+  $('#page-password-change').classList.add('hidden');
   $('#page-app').classList.remove('hidden');
   $('#user-avatar').textContent = currentUser.username[0].toUpperCase();
   $('#user-info').textContent = currentUser.username;
@@ -806,6 +900,7 @@ document.addEventListener('click', async (e) => {
 });
 
 $('#btn-new-client').addEventListener('click', () => openClientModal());
+$('#btn-bulk-create').addEventListener('click', () => openBulkCreateModal());
 $('#btn-new-service').addEventListener('click', () => openServiceModal());
 
 /* --- Binaries zip upload (admin) --- */
@@ -891,6 +986,57 @@ function esc(s) {
   return d.innerHTML;
 }
 
+/* --- Bulk create clients modal --- */
+function openBulkCreateModal() {
+  openModal(`
+    <h3 class="text-white font-semibold text-base mb-5">Bulk Create Clients</h3>
+    <form id="modal-form" class="space-y-4">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Usernames (comma-separated)</label>
+        <textarea id="mf-bulk-usernames" class="input-field" rows="5" placeholder="user1, user2, user3" required></textarea>
+        <p class="text-[10px] text-gray-600 mt-1">Each user will be created without a password. They will set one on first login.</p>
+      </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max concurrent slots</label>
+        <input id="mf-bulk-max" type="number" min="0" max="10" class="input-field" value="3" required />
+      </div>
+      <div id="bulk-result" class="hidden text-xs rounded-lg px-3 py-2"></div>
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn btn-primary flex-1">Create Clients</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      </div>
+    </form>
+  `);
+
+  $('#modal-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('[type="submit"]');
+    btn.disabled = true;
+    const resultEl = $('#bulk-result');
+    resultEl.classList.add('hidden');
+    try {
+      const res = await api.post('/api/admin/clients/bulk', {
+        usernames: $('#mf-bulk-usernames').value,
+        max_concurrent: parseInt($('#mf-bulk-max').value) || 3,
+      });
+      const created = res.created?.length || 0;
+      const errors = res.errors?.length || 0;
+      resultEl.classList.remove('hidden');
+      if (errors > 0) {
+        resultEl.className = 'text-xs rounded-lg px-3 py-2 text-yellow-400 bg-yellow-400/10';
+        resultEl.textContent = `Created ${created} client(s), ${errors} error(s).`;
+      } else {
+        resultEl.className = 'text-xs rounded-lg px-3 py-2 text-green-400 bg-green-400/10';
+        resultEl.textContent = `Created ${created} client(s) successfully.`;
+      }
+      toast(`Bulk created: ${created} client(s)`);
+      refreshAdmin();
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally { btn.disabled = false; }
+  });
+}
+
 /* --- Client modal --- */
 function openClientModal(c = {}) {
   const isEdit = !!c.id;
@@ -901,10 +1047,20 @@ function openClientModal(c = {}) {
         <label class="block text-xs text-gray-500 mb-1.5 font-medium">Username</label>
         <input id="mf-username" class="input-field" value="${esc(c.username)}" ${isEdit ? 'disabled' : 'required'} />
       </div>
+      ${isEdit ? `
       <div>
-        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Password${isEdit ? ' (blank to keep)' : ''}</label>
-        <input id="mf-password" type="password" class="input-field" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022" ${isEdit ? '' : 'required'} minlength="6" />
-      </div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Password (blank to keep)</label>
+        <input id="mf-password" type="password" class="input-field" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022" minlength="6" />
+      </div>` : `
+      <label class="flex items-center gap-2.5 cursor-pointer mb-2">
+        <input id="mf-set-pw-check" type="checkbox" checked class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+        <span class="text-sm text-gray-300">Set password now</span>
+      </label>
+      <div id="mf-pw-wrap">
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Password</label>
+        <input id="mf-password" type="password" class="input-field" placeholder="Min. 6 characters" required minlength="6" />
+        <p class="text-[10px] text-gray-600 mt-1">Uncheck to create without password — user will set it on first login.</p>
+      </div>`}
       <div>
         <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max concurrent slots</label>
         <input id="mf-max" type="number" min="0" max="10" class="input-field" value="${c.max_concurrent ?? 3}" required />
@@ -921,6 +1077,18 @@ function openClientModal(c = {}) {
     </form>
   `);
 
+  // Toggle password field visibility when checkbox changes (create mode only)
+  if (!isEdit) {
+    const pwCheck = $('#mf-set-pw-check');
+    const pwWrap = $('#mf-pw-wrap');
+    const pwInput = $('#mf-password');
+    pwCheck.addEventListener('change', () => {
+      const show = pwCheck.checked;
+      pwWrap.classList.toggle('hidden', !show);
+      pwInput.required = show;
+    });
+  }
+
   $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('[type="submit"]');
@@ -935,7 +1103,11 @@ function openClientModal(c = {}) {
         toast('Client updated');
       } else {
         payload.username = $('#mf-username').value;
-        payload.password = pw;
+        if ($('#mf-set-pw-check') && !$('#mf-set-pw-check').checked) {
+          payload.password = null; // no password — user must set on first login
+        } else {
+          payload.password = pw;
+        }
         await api.post('/api/admin/clients', payload);
         toast('Client created');
       }

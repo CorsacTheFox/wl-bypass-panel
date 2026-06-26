@@ -54,23 +54,29 @@ class UserService:
     async def create_client(
         self,
         username: str,
-        password: str,
+        password: str | None = None,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         external_ref: str | None = None,
     ) -> dict:
         username = (username or "").strip()
-        if not username or not password:
-            raise ValueError("username and password are required")
+        if not username:
+            raise ValueError("username is required")
         if max_concurrent < 0:
             raise ValueError("max_concurrent must be >= 0")
-        pw_hash = hash_password(password)
+        # If no password provided, user must set one on first login.
+        if password is not None:
+            pw_hash = hash_password(password)
+            must_change = 0
+        else:
+            pw_hash = ""  # empty placeholder — authenticate() will skip verification
+            must_change = 1
         try:
             cur = await db.execute(
                 """
-                INSERT INTO users (username, password_hash, role, max_concurrent, external_ref)
-                VALUES (?, ?, 'client', ?, ?)
+                INSERT INTO users (username, password_hash, role, max_concurrent, external_ref, password_must_change)
+                VALUES (?, ?, 'client', ?, ?, ?)
                 """,
-                (username, pw_hash, max_concurrent, external_ref),
+                (username, pw_hash, max_concurrent, external_ref, must_change),
             )
         except Exception as e:  # unique violation etc.
             raise ValueError(f"could not create user: {e}") from e
@@ -111,11 +117,22 @@ class UserService:
 
     async def authenticate(self, username: str, password: str) -> dict | None:
         row = await db.fetchone(
-            "SELECT id, username, password_hash, role, max_concurrent, enabled FROM users WHERE username=?",
+            "SELECT id, username, password_hash, role, max_concurrent, enabled, password_must_change FROM users WHERE username=?",
             (username,),
         )
         if row is None or not row["enabled"]:
             return None
+        must_change = bool(row["password_must_change"])
+        # If user has no password set and must_change is true, allow login
+        # with any credentials but force password change.
+        if must_change and not row["password_hash"]:
+            return {
+                "id": row["id"],
+                "username": row["username"],
+                "role": row["role"],
+                "max_concurrent": row["max_concurrent"],
+                "must_change_password": True,
+            }
         if not verify_password(password, row["password_hash"]):
             return None
         return {
@@ -123,6 +140,7 @@ class UserService:
             "username": row["username"],
             "role": row["role"],
             "max_concurrent": row["max_concurrent"],
+            "must_change_password": must_change,
         }
 
     async def update(self, user_id: int, *, password: str | None = None,
@@ -143,6 +161,36 @@ class UserService:
     async def delete(self, user_id: int) -> None:
         # Stopping their live instances first is the caller's responsibility.
         await db.execute("DELETE FROM users WHERE id=? AND role='client'", (user_id,))
+
+    async def change_password(self, user_id: int, new_password: str) -> dict:
+        """Set a new password and clear the must_change flag."""
+        if not new_password or len(new_password) < 6:
+            raise ValueError("password must be at least 6 characters")
+        pw_hash = hash_password(new_password)
+        await db.execute(
+            "UPDATE users SET password_hash=?, password_must_change=0 WHERE id=?",
+            (pw_hash, user_id),
+        )
+        return await self.get(user_id)
+
+    async def create_clients_bulk(
+        self, usernames: list[str], max_concurrent: int = DEFAULT_MAX_CONCURRENT
+    ) -> list[dict]:
+        """Create multiple clients without passwords (must change on first login)."""
+        created = []
+        errors = []
+        for name in usernames:
+            name = name.strip()
+            if not name:
+                continue
+            try:
+                user = await self.create_client(
+                    username=name, password=None, max_concurrent=max_concurrent
+                )
+                created.append(user)
+            except ValueError as e:
+                errors.append({"username": name, "error": str(e)})
+        return {"created": created, "errors": errors}
 
 
 user_service = UserService()

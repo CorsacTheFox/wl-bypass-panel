@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
     -- opaque handle for a future Remnawave-style webhook source; NULL = local
     external_ref  TEXT UNIQUE,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-    enabled       INTEGER NOT NULL DEFAULT 1
+    enabled       INTEGER NOT NULL DEFAULT 1,
+    password_must_change INTEGER NOT NULL DEFAULT 0
 );
 
 -- Pre-configured services the binary can connect to (Service A, Service B, ...)
@@ -103,6 +104,11 @@ class Database:
         columns = [row[1] for row in rows]
         if "output_link" not in columns:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN output_link TEXT")
+        # Migration: add password_must_change column if missing.
+        rows = await self._conn.execute_fetchall("PRAGMA table_info(users)")
+        user_columns = [row[1] for row in rows]
+        if "password_must_change" not in user_columns:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN password_must_change INTEGER NOT NULL DEFAULT 0")
         await self._conn.commit()
 
     async def close(self) -> None:

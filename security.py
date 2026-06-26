@@ -69,7 +69,7 @@ async def get_user_by_token(token: str) -> dict | None:
     row = await db.fetchone(
         """
         SELECT u.id, u.username, u.role, u.max_concurrent, u.enabled,
-               s.expires_at
+               u.password_must_change, s.expires_at
         FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token = ?
         """,
@@ -93,6 +93,7 @@ async def get_user_by_token(token: str) -> dict | None:
         "username": row["username"],
         "role": row["role"],
         "max_concurrent": row["max_concurrent"],
+        "must_change_password": bool(row["password_must_change"]),
     }
 
 

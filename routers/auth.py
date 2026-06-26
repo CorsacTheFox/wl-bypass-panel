@@ -15,20 +15,32 @@ class LoginIn(BaseModel):
     password: str
 
 
-class LoginOut(BaseModel):
-    token: str
-    role: str
-    username: str
+class ChangePasswordIn(BaseModel):
+    new_password: str
 
 
-@router.post("/login", response_model=LoginOut)
+@router.post("/login")
 async def login(body: LoginIn):
     user = await user_service.authenticate(body.username, body.password)
     if user is None:
         # identical message for bad user vs bad password
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     token = await create_session(user["id"])
-    return LoginOut(token=token, role=user["role"], username=user["username"])
+    return {
+        "token": token,
+        "role": user["role"],
+        "username": user["username"],
+        "must_change_password": user.get("must_change_password", False),
+    }
+
+
+@router.post("/change-password")
+async def change_password(body: ChangePasswordIn, user=Depends(get_current_user)):
+    try:
+        await user_service.change_password(user["id"], body.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    return {"ok": True}
 
 
 @router.post("/logout")
@@ -45,4 +57,5 @@ async def me(user=Depends(get_current_user)):
         "username": user["username"],
         "role": user["role"],
         "max_concurrent": user["max_concurrent"],
+        "must_change_password": user.get("must_change_password", False),
     }
