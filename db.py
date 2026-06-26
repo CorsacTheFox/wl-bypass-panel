@@ -6,7 +6,11 @@ which keeps the connection simple and lets the app layer avoid passing a
 """
 from __future__ import annotations
 
+import logging
+
 import aiosqlite
+
+log = logging.getLogger("db")
 
 from config import DATABASE_PATH
 
@@ -56,7 +60,7 @@ CREATE TABLE IF NOT EXISTS instances (
     error        TEXT,
     output_link  TEXT,                          -- join_link extracted from binary stdout (e.g. wbstream://...)
     FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
-    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE RESTRICT
+    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_instances_user_status ON instances(user_id, status);
@@ -109,6 +113,27 @@ class Database:
         user_columns = [row[1] for row in rows]
         if "password_must_change" not in user_columns:
             await self._conn.execute("ALTER TABLE users ADD COLUMN password_must_change INTEGER NOT NULL DEFAULT 0")
+
+        # Migration: change instances.service_id FK from RESTRICT to CASCADE.
+        # SQLite cannot ALTER constraints, so we check the sql schema and
+        # recreate the table if it still has RESTRICT.
+        fk_row = await self._conn.fetchone(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='instances'"
+        )
+        if fk_row and "ON DELETE RESTRICT" in (fk_row["sql"] or ""):
+            log.warning("Migrating instances FK from RESTRICT to CASCADE …")
+            await self._conn.execute("PRAGMA foreign_keys=OFF")
+            await self._conn.execute("ALTER TABLE instances RENAME TO _instances_old")
+            await self._conn.executescript(SCHEMA_SQL)
+            await self._conn.execute(
+                "INSERT INTO instances (id,user_id,service_id,pid,status,started_at,"
+                "ended_at,exit_code,timeout_at,error,output_link) "
+                "SELECT id,user_id,service_id,pid,status,started_at,"
+                "ended_at,exit_code,timeout_at,error,output_link FROM _instances_old"
+            )
+            await self._conn.execute("DROP TABLE _instances_old")
+            await self._conn.execute("PRAGMA foreign_keys=ON")
+            log.warning("FK migration complete.")
         await self._conn.commit()
 
     async def close(self) -> None:

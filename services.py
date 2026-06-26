@@ -236,19 +236,17 @@ class ServiceRegistry:
         return await self.get(service_id)
 
     async def delete(self, service_id: int) -> None:
-        # Cascade: stop all live instances using this service, then remove
-        # all instance rows (including historical ones), then delete the service.
+        # Stop any live instances using this service (best-effort).
+        # FK CASCADE on instances.service_id will clean up all instance rows
+        # when the service row is deleted.
         rows = await db.fetchall(
             "SELECT id FROM instances WHERE service_id=?", (service_id,)
         )
         for r in rows:
-            iid = r["id"]
-            # Best-effort: stop any live process, ignore if already stopped.
             try:
-                await process_manager.kill(iid, grace=0)
+                await process_manager.stop(r["id"])
             except Exception:
                 pass
-        await db.execute("DELETE FROM instances WHERE service_id=?", (service_id,))
         await db.execute("DELETE FROM services WHERE id=?", (service_id,))
 
 
