@@ -38,6 +38,10 @@ REAPER_INTERVAL_SECONDS = float(os.getenv("WB_REAPER_INTERVAL", "2"))
 SESSION_TTL_SECONDS = int(os.getenv("WB_SESSION_TTL", str(12 * 3600)))
 PBKDF2_ITERATIONS = 200_000
 
+# Quick-launch page: token to authorize unauthenticated instance creation.
+# When empty (default), the /quick route is disabled.
+QUICK_TOKEN = os.getenv("WB_QUICK_TOKEN", "")
+
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

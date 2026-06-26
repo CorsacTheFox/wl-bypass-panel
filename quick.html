@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Launch</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            surface: { 950:'#08080a', 900:'#0e0e12', 800:'#14141a', 700:'#1a1a22', 600:'#22222c' },
+            violet: { 400:'#a78bfa', 500:'#8b5cf6', 600:'#7c3aed', 700:'#6d28d9' },
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .anim-fade { animation: fadeIn 0.25s ease-out; }
+    .spinner { animation: spin 1s linear infinite; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-surface-950 text-gray-300 min-h-screen flex items-center justify-center px-4">
+
+  <div class="w-full max-w-md anim-fade text-center">
+    <!-- Logo -->
+    <div class="flex items-center justify-center gap-3 mb-8">
+      <div class="w-11 h-11 rounded-xl bg-violet-600 flex items-center justify-center shadow-lg shadow-violet-600/20">
+        <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- State: loading -->
+    <div id="state-loading">
+      <p class="text-gray-400 text-sm mb-4">Launching instance&hellip;</p>
+      <div class="flex justify-center">
+        <svg class="w-6 h-6 text-violet-400 spinner" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- State: waiting for link -->
+    <div id="state-waiting" class="hidden">
+      <p class="text-gray-400 text-sm mb-4">Instance started, waiting for link&hellip;</p>
+      <div class="flex justify-center">
+        <svg class="w-6 h-6 text-yellow-400 spinner" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- State: link ready -->
+    <div id="state-ready" class="hidden">
+      <p class="text-green-400 text-sm mb-4">Instance ready!</p>
+      <a id="link-out" href="#" target="_blank"
+         class="inline-flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white font-medium text-sm px-6 py-3 rounded-xl transition-colors">
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/>
+        </svg>
+        Open Link
+      </a>
+      <button id="btn-copy" class="mt-3 block mx-auto text-xs text-gray-500 hover:text-gray-300 transition-colors">
+        Copy to clipboard
+      </button>
+    </div>
+
+    <!-- State: error -->
+    <div id="state-error" class="hidden">
+      <p id="error-msg" class="text-red-400 text-sm"></p>
+      <button onclick="location.reload()" class="mt-4 text-xs text-gray-500 hover:text-gray-300 transition-colors underline">
+        Retry
+      </button>
+    </div>
+
+    <p class="text-gray-700 text-xs mt-8">15-minute session &middot; auto-created</p>
+  </div>
+
+  <script>
+  (async () => {
+    function showState(id) {
+      ['state-loading', 'state-waiting', 'state-ready', 'state-error'].forEach(s => {
+        document.getElementById(s).classList.toggle('hidden', s !== id);
+      });
+    }
+
+    function setError(msg) {
+      document.getElementById('error-msg').textContent = msg;
+      showState('state-error');
+    }
+
+    try {
+      // 1. Create instance (15 min)
+      const res = await fetch('/api/quick/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || `Request failed (${res.status})`);
+      }
+      const instance = await res.json();
+      const instanceId = instance.id;
+      if (!instanceId) throw new Error('No instance ID returned');
+
+      showState('state-waiting');
+
+      // 2. Poll for output_link (max 60s)
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        try {
+          const pollRes = await fetch('/api/quick/status/' + instanceId);
+          if (!pollRes.ok) continue;
+          const status = await pollRes.json();
+          if (status.output_link) {
+            document.getElementById('link-out').href = status.output_link;
+            showState('state-ready');
+
+            document.getElementById('btn-copy').addEventListener('click', async () => {
+              try {
+                await navigator.clipboard.writeText(status.output_link);
+                document.getElementById('btn-copy').textContent = 'Copied!';
+                setTimeout(() => { document.getElementById('btn-copy').textContent = 'Copy to clipboard'; }, 2000);
+              } catch { /* ignore */ }
+            });
+            return;
+          }
+          // If instance is terminal without a link, stop polling
+          if (['stopped', 'exited', 'crashed', 'timeout'].includes(status.status)) {
+            throw new Error('Instance ended without producing a link' + (status.error ? ': ' + status.error : ''));
+          }
+        } catch (e) {
+          if (e.message.startsWith('Instance ended')) throw e;
+          // Network error — retry
+        }
+      }
+      throw new Error('Timed out waiting for link');
+    } catch (err) {
+      setError(err.message);
+    }
+  })();
+  </script>
+</body>
+</html>

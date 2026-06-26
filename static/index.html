@@ -196,8 +196,16 @@
             <select id="sel-service" class="input-field flex-1">
               <option disabled selected>Loading services...</option>
             </select>
-            <input id="inp-timeout" type="number" min="60" max="86400" value="3600"
-                   class="input-field sm:w-28" title="Auto-stop after N seconds" />
+            <select id="sel-timeout" class="input-field sm:w-32">
+              <option value="3600">1 hour</option>
+              <option value="14400" selected>4 hours</option>
+              <option value="28800">8 hours</option>
+              <option value="43200">12 hours</option>
+              <option value="86400">24 hours</option>
+              <option value="custom">Custom…</option>
+            </select>
+            <input id="inp-timeout-custom" type="number" min="60" max="86400" placeholder="seconds"
+                   class="input-field hidden sm:w-32" title="Custom duration in seconds" />
             <button id="btn-start" class="btn btn-success px-5">
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
               Start
@@ -625,10 +633,29 @@ function showLaunchMsg(msg, ok) {
     (ok ? 'text-green-400 bg-green-400/10' : 'text-red-400 bg-red-400/10');
 }
 
+/* --- Timeout selector: toggle custom input --- */
+$('#sel-timeout').addEventListener('change', () => {
+  const customInput = $('#inp-timeout-custom');
+  if ($('#sel-timeout').value === 'custom') {
+    customInput.classList.remove('hidden');
+    customInput.focus();
+  } else {
+    customInput.classList.add('hidden');
+  }
+});
+
+function getTimeoutSeconds() {
+  const val = $('#sel-timeout').value;
+  if (val === 'custom') {
+    return parseInt($('#inp-timeout-custom').value) || 3600;
+  }
+  return parseInt(val) || 3600;
+}
+
 /* --- Start call --- */
 $('#btn-start').addEventListener('click', async () => {
   const svcId = parseInt($('#sel-service').value);
-  const timeout = parseInt($('#inp-timeout').value) || 3600;
+  const timeout = getTimeoutSeconds();
   const btn = $('#btn-start');
   if (!svcId) { showLaunchMsg('Select a service first', false); return; }
   btn.disabled = true;

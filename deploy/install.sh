@@ -96,6 +96,7 @@ APP_PORT="${APP_PORT:-8000}"
 PUBLIC_PORT="${PUBLIC_PORT:-80}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+QUICK_TOKEN="${QUICK_TOKEN:-}"
 APP_DIR="${APP_DIR:-/opt/whitelist-manager}"
 SERVICE_USER="${SERVICE_USER:-wb-manager}"
 SERVICE_NAME="wb-manager"
@@ -138,6 +139,8 @@ if [[ "$INTERACTIVE" -eq 1 ]]; then
 else
     : "${ADMIN_PASSWORD:?Non-interactive: set ADMIN_PASSWORD (or ADMIN_PASSWORD= to auto-generate is unsupported in CI)}"
 fi
+
+prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
 
 # #############################################################################
 # 2. System packages
@@ -257,6 +260,9 @@ upsert_key "WB_HOST"            "$APP_HOST"
 upsert_key "WB_PORT"            "$APP_PORT"
 upsert_key "WB_ADMIN_USERNAME"  "$ADMIN_USERNAME"
 upsert_key "WB_ADMIN_PASSWORD"  "$ADMIN_PASSWORD"
+if [[ -n "$QUICK_TOKEN" ]]; then
+    upsert_key "WB_QUICK_TOKEN" "$QUICK_TOKEN"
+fi
 upsert_key "WB_DATA_DIR"        "$APP_DIR/data"
 upsert_key "WB_BINARIES_DIR"    "$APP_DIR/binaries"
 upsert_key "WB_DATABASE_PATH"   "$APP_DIR/data/app.db"
@@ -473,9 +479,15 @@ echo "  Admin user:  $ADMIN_USERNAME"
 echo "  Admin pass:  $ADMIN_PASSWORD   (also in $APP_DIR/.env)"
 if [[ -n "$DOMAIN" ]]; then
     echo "  URL:         https://$DOMAIN"
+    if [[ -n "$QUICK_TOKEN" ]]; then
+        echo "  Quick launch: https://$DOMAIN/quick?token=$QUICK_TOKEN"
+    fi
 else
     IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
     echo "  URL:         http://${IP}:${PUBLIC_PORT}"
+    if [[ -n "$QUICK_TOKEN" ]]; then
+        echo "  Quick launch: http://${IP}:${PUBLIC_PORT}/quick?token=$QUICK_TOKEN"
+    fi
 fi
 echo "  Proxy:       $PROXY"
 echo

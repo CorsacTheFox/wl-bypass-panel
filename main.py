@@ -26,6 +26,7 @@ from process_manager import process_manager
 from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import client as client_router
+from routers import quick as quick_router
 from services import user_service
 
 logging.basicConfig(
@@ -77,6 +78,7 @@ app = FastAPI(title="Whitelist-Bypass Instance Manager", lifespan=lifespan)
 app.include_router(auth_router.router)
 app.include_router(admin_router.router)
 app.include_router(client_router.router)
+app.include_router(quick_router.router)
 
 # Static assets (CSS/JS)
 if STATIC_DIR.exists():
@@ -86,6 +88,17 @@ if STATIC_DIR.exists():
 @app.get("/api/health")
 async def health():
     return {"ok": True, "live_processes": process_manager.live_count()}
+
+
+# Quick-launch page (static HTML, token is passed via query param by the user)
+QUICK_HTML = BASE_DIR / "quick.html"
+
+
+@app.get("/quick")
+async def quick_page():
+    if QUICK_HTML.exists():
+        return FileResponse(QUICK_HTML)
+    return {"detail": "quick.html not found"}
 
 
 # SPA fallback: any non-API, non-static GET -> index.html
