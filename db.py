@@ -122,19 +122,44 @@ class Database:
         )
         fk_sql = fk_rows[0]["sql"] if fk_rows else ""
         if fk_sql and "ON DELETE RESTRICT" in fk_sql:
-            log.warning("Migrating instances FK from RESTRICT to CASCADE …")
+            log.warning("Migrating instances FK from RESTRICT to CASCADE ...")
+            # Disable FK enforcement for the DDL operations.
             await self._conn.execute("PRAGMA foreign_keys=OFF")
+            # Rename old table out of the way.
             await self._conn.execute("ALTER TABLE instances RENAME TO _instances_old")
-            await self._conn.executescript(SCHEMA_SQL)
+            # Recreate instances with the correct CASCADE constraint.
             await self._conn.execute(
-                "INSERT INTO instances (id,user_id,service_id,pid,status,started_at,"
-                "ended_at,exit_code,timeout_at,error,output_link) "
-                "SELECT id,user_id,service_id,pid,status,started_at,"
-                "ended_at,exit_code,timeout_at,error,output_link FROM _instances_old"
+                """CREATE TABLE instances (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id      INTEGER NOT NULL,
+                    service_id   INTEGER NOT NULL,
+                    pid          INTEGER,
+                    status       TEXT NOT NULL DEFAULT 'pending'
+                                 CHECK (status IN ('pending','running','stopping','stopped','exited','crashed','timeout')),
+                    started_at   TEXT NOT NULL DEFAULT (datetime('now')),
+                    ended_at     TEXT,
+                    exit_code    INTEGER,
+                    timeout_at   TEXT,
+                    error        TEXT,
+                    output_link  TEXT,
+                    FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
+                    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+                )"""
             )
+            # Copy data back.
+            await self._conn.execute(
+                "INSERT INTO instances "
+                "(id,user_id,service_id,pid,status,started_at,ended_at,exit_code,"
+                "timeout_at,error,output_link) "
+                "SELECT id,user_id,service_id,pid,status,started_at,ended_at,exit_code,"
+                "timeout_at,error,output_link "
+                "FROM _instances_old"
+            )
+            # Drop the old table.
             await self._conn.execute("DROP TABLE _instances_old")
+            # Re-enable FK enforcement.
             await self._conn.execute("PRAGMA foreign_keys=ON")
-            log.warning("FK migration complete.")
+            log.warning("FK migration complete (table recreated with CASCADE).")
         await self._conn.commit()
 
     async def close(self) -> None:
