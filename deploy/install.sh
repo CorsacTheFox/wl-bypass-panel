@@ -69,6 +69,13 @@ SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                       # the project root
 INTERACTIVE=0
 if [[ -t 0 ]] && [[ -t 1 ]]; then INTERACTIVE=1; fi
 
+# Detect existing installation (update vs fresh install).
+IS_UPDATE=false
+if [[ -f "$APP_DIR/main.py" ]]; then
+    IS_UPDATE=true
+fi
+MODE_LABEL="INSTALL"
+
 # prompt <var> <message> <default>
 # Sets the var to user input or the default (the default already reflects any
 # env-var override the caller set, so this single helper covers both modes).
@@ -109,10 +116,29 @@ APP_DIR="${APP_DIR:-/opt/whitelist-manager}"
 SERVICE_USER="${SERVICE_USER:-wb-manager}"
 SERVICE_NAME="wb-manager"
 
+# When updating, seed defaults from the existing .env so the user can just
+# press Enter through all prompts without re-entering everything.
+if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
+    _env_get() { grep -E "^${1}=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+    ADMIN_USERNAME="${ADMIN_USERNAME:-$(_env_get WB_ADMIN_USERNAME)}"
+    ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(_env_get WB_ADMIN_PASSWORD)}"
+    APP_HOST="${APP_HOST:-$(_env_get WB_HOST)}"
+    APP_PORT="${APP_PORT:-$(_env_get WB_PORT)}"
+    QUICK_TOKEN="${QUICK_TOKEN:-$(_env_get WB_QUICK_TOKEN)}"
+    PROXYCHAINS_ENABLED="${PROXYCHAINS_ENABLED:-$(_env_get WB_PROXYCHAINS_ENABLED)}"
+    PROXYCHAINS_TYPE="${PROXYCHAINS_TYPE:-$(_env_get WB_PROXYCHAINS_TYPE)}"
+    PROXYCHAINS_HOST="${PROXYCHAINS_HOST:-$(_env_get WB_PROXYCHAINS_HOST)}"
+    PROXYCHAINS_PORT="${PROXYCHAINS_PORT:-$(_env_get WB_PROXYCHAINS_PORT)}"
+fi
+
 echo
 echo "=============================================================="
 echo "  Whitelist-Bypass Instance Manager — installer"
-echo "  (press Enter to accept the [default] for each question)"
+if $IS_UPDATE; then
+    echo "  MODE: UPDATE (existing installation at $APP_DIR)"
+else
+    echo "  (press Enter to accept the [default] for each question)"
+fi
 echo "=============================================================="
 
 prompt PROXY       "Reverse proxy (nginx | caddy)" "$PROXY"
@@ -141,11 +167,17 @@ if [[ -z "$DOMAIN" ]]; then
 fi
 
 prompt ADMIN_USERNAME "Admin username" "$ADMIN_USERNAME"
-# Password: don't echo. Allow blank -> auto-generate later.
+# Password: don't echo. Blank = auto-generate on fresh install, or keep current on update.
 if [[ "$INTERACTIVE" -eq 1 ]]; then
-    read -r -s -p "Admin password (blank = auto-generate): " ADMIN_PASSWORD; echo
+    if $IS_UPDATE; then
+        read -r -s -p "Admin password (blank = keep current): " ADMIN_PASSWORD; echo
+    else
+        read -r -s -p "Admin password (blank = auto-generate): " ADMIN_PASSWORD; echo
+    fi
 else
-    : "${ADMIN_PASSWORD:?Non-interactive: set ADMIN_PASSWORD (or ADMIN_PASSWORD= to auto-generate is unsupported in CI)}"
+    if ! $IS_UPDATE; then
+        : "${ADMIN_PASSWORD:?Non-interactive: set ADMIN_PASSWORD (or ADMIN_PASSWORD= to auto-generate is unsupported in CI)}"
+    fi
 fi
 
 prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
@@ -164,6 +196,63 @@ if [[ "$PROXYCHAINS_ENABLED" == "y" || "$PROXYCHAINS_ENABLED" == "yes" || "$PROX
 else
     PROXYCHAINS_ENABLED=""
     log "Proxychains4 disabled"
+fi
+
+# #############################################################################
+# 1b. Pre-flight: stop service, kill child processes, backup database (update only)
+# #############################################################################
+if $IS_UPDATE; then
+    MODE_LABEL="UPDATE"
+    echo
+    log "[UPDATE] Detected existing installation at $APP_DIR"
+
+    # 1. Stop the systemd service.
+    if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+        log "[UPDATE] Stopping service $SERVICE_NAME ..."
+        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+        sleep 1
+        ok "[UPDATE] Service stopped"
+    fi
+
+    # 2. Kill any remaining child processes (spawned binaries) owned by the
+    #    service user. SIGTERM first, wait, then SIGKILL stragglers.
+    CHILDREN=$(pgrep -u "$SERVICE_USER" 2>/dev/null || true)
+    if [[ -n "$CHILDREN" ]]; then
+        log "[UPDATE] Sending SIGTERM to $SERVICE_USER processes ..."
+        kill -TERM $CHILDREN 2>/dev/null || true
+        sleep 3
+        # Force-kill anything still alive.
+        REMAINING=$(pgrep -u "$SERVICE_USER" 2>/dev/null || true)
+        if [[ -n "$REMAINING" ]]; then
+            log "[UPDATE] Force-killing remaining processes ..."
+            kill -KILL $REMAINING 2>/dev/null || true
+            sleep 1
+        fi
+        ok "[UPDATE] All child processes terminated"
+    else
+        ok "[UPDATE] No child processes running"
+    fi
+
+    # 3. Backup SQLite database (keep last 3 backups).
+    DB_PATH="$APP_DIR/data/app.db"
+    if [[ -f "$DB_PATH" ]]; then
+        BACKUP_DIR="$APP_DIR/data/backups"
+        mkdir -p "$BACKUP_DIR"
+        TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+        BACKUP_FILE="$BACKUP_DIR/app.db.${TIMESTAMP}.bak"
+        log "[UPDATE] Backing up database ..."
+        cp -a "$DB_PATH" "$BACKUP_FILE"
+        ok "[UPDATE] Database backed up to $(basename "$BACKUP_FILE")"
+
+        # Rotate: keep only the 3 most recent backups.
+        ls -1t "$BACKUP_DIR"/app.db.*.bak 2>/dev/null | tail -n +4 | xargs -r rm -f
+        BACKUP_COUNT="$(ls -1 "$BACKUP_DIR"/app.db.*.bak 2>/dev/null | wc -l)"
+        log "[UPDATE] $BACKUP_COUNT backup(s) retained in data/backups/"
+    else
+        ok "[UPDATE] No database found — skipping backup"
+    fi
+
+    echo
 fi
 
 # #############################################################################
@@ -259,11 +348,17 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
     cp "$TEMPLATE" "$APP_DIR/.env"
 fi
 
-# Generate a strong password if none was provided. Use only [A-Za-z0-9] so it
-# survives copy/paste and shell/JSON quoting (base64's +/= caused login bugs).
+# Generate a strong password if none was provided (fresh install only).
+# On update, blank means "keep the existing one from .env".
 if [[ -z "$ADMIN_PASSWORD" ]]; then
-    ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
-    ok "Auto-generated admin password (alphanumeric, no special chars)"
+    if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
+        ADMIN_PASSWORD="$(grep -E '^WB_ADMIN_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2-)"
+        ok "Keeping existing admin password"
+    fi
+    if [[ -z "$ADMIN_PASSWORD" ]]; then
+        ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
+        ok "Auto-generated admin password (alphanumeric, no special chars)"
+    fi
 fi
 
 # upsert_key <KEY> <VALUE> — sets KEY=VALUE, replacing any existing line.
@@ -502,7 +597,7 @@ fi
 # Done — show next steps
 # #############################################################################
 echo
-ok "================ INSTALL COMPLETE ================"
+ok "================ ${MODE_LABEL:-INSTALL} COMPLETE ================"
 echo "  App dir:     $APP_DIR"
 echo "  Backend:     ${APP_HOST}:${APP_PORT}  (systemd: systemctl status $SERVICE_NAME)"
 echo "  Logs:        journalctl -u $SERVICE_NAME -f"
@@ -525,6 +620,10 @@ if [[ -n "$PROXYCHAINS_ENABLED" ]]; then
     echo "  Proxychains:  $PROXYCHAINS_TYPE://$PROXYCHAINS_HOST:$PROXYCHAINS_PORT"
 fi
 echo
-echo "  NOTE: re-running this installer RESETS the admin password to the one"
-echo "  shown above / stored in $APP_DIR/.env (by design — see README)."
+if $IS_UPDATE; then
+    echo "  NOTE: on UPDATE, database was backed up to $APP_DIR/data/backups/"
+else
+    echo "  NOTE: re-running this installer RESETS the admin password to the one"
+    echo "  shown above / stored in $APP_DIR/.env (by design — see README)."
+fi
 echo "==================================================="
