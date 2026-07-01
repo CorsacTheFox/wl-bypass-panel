@@ -31,10 +31,6 @@
 #   PUBLIC_PORT   external HTTP port     (default 80)    — only when no DOMAIN
 #   ADMIN_USERNAME                        (default admin)
 #   ADMIN_PASSWORD                        (default: auto-generated, alphanumeric)
-#   PROXYCHAINS_ENABLED  1                (default: disabled)
-#   PROXYCHAINS_TYPE     socks5           (socks5 | socks4 | http)
-#   PROXYCHAINS_HOST     127.0.0.1
-#   PROXYCHAINS_PORT     1080
 #   APP_DIR       install path           (default /opt/whitelist-manager)
 #   SERVICE_USER  unprivileged user      (default wb-manager)
 #   DEBUG=1       enable set -x tracing
@@ -113,10 +109,6 @@ PUBLIC_PORT="${PUBLIC_PORT:-80}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 QUICK_TOKEN="${QUICK_TOKEN:-}"
-PROXYCHAINS_ENABLED="${PROXYCHAINS_ENABLED:-}"
-PROXYCHAINS_TYPE="${PROXYCHAINS_TYPE:-socks5}"
-PROXYCHAINS_HOST="${PROXYCHAINS_HOST:-}"
-PROXYCHAINS_PORT="${PROXYCHAINS_PORT:-}"
 
 # When updating, seed defaults from the existing .env so the user can just
 # press Enter through all prompts without re-entering everything.
@@ -127,10 +119,6 @@ if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
     APP_HOST="${APP_HOST:-$(_env_get WB_HOST)}"
     APP_PORT="${APP_PORT:-$(_env_get WB_PORT)}"
     QUICK_TOKEN="${QUICK_TOKEN:-$(_env_get WB_QUICK_TOKEN)}"
-    PROXYCHAINS_ENABLED="${PROXYCHAINS_ENABLED:-$(_env_get WB_PROXYCHAINS_ENABLED)}"
-    PROXYCHAINS_TYPE="${PROXYCHAINS_TYPE:-$(_env_get WB_PROXYCHAINS_TYPE)}"
-    PROXYCHAINS_HOST="${PROXYCHAINS_HOST:-$(_env_get WB_PROXYCHAINS_HOST)}"
-    PROXYCHAINS_PORT="${PROXYCHAINS_PORT:-$(_env_get WB_PROXYCHAINS_PORT)}"
 fi
 
 echo
@@ -183,22 +171,6 @@ else
 fi
 
 prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
-
-# Proxychains4
-prompt PROXYCHAINS_ENABLED "Enable proxychains4 for all instances? (y/n)" "$PROXYCHAINS_ENABLED"
-PROXYCHAINS_ENABLED="${PROXYCHAINS_ENABLED,,}"
-if [[ "$PROXYCHAINS_ENABLED" == "y" || "$PROXYCHAINS_ENABLED" == "yes" || "$PROXYCHAINS_ENABLED" == "1" ]]; then
-    PROXYCHAINS_ENABLED="1"
-    prompt PROXYCHAINS_TYPE "Proxy type (socks5 | socks4 | http)" "$PROXYCHAINS_TYPE"
-    prompt PROXYCHAINS_HOST "Proxy host (e.g. 127.0.0.1)" "$PROXYCHAINS_HOST"
-    [[ -n "$PROXYCHAINS_HOST" ]] || die "PROXYCHAINS_HOST is required when proxychains is enabled"
-    prompt PROXYCHAINS_PORT "Proxy port (e.g. 1080)" "$PROXYCHAINS_PORT"
-    [[ -n "$PROXYCHAINS_PORT" ]] || die "PROXYCHAINS_PORT is required when proxychains is enabled"
-    log "Proxychains4 enabled: $PROXYCHAINS_TYPE://$PROXYCHAINS_HOST:$PROXYCHAINS_PORT"
-else
-    PROXYCHAINS_ENABLED=""
-    log "Proxychains4 disabled"
-fi
 
 # #############################################################################
 # 1b. Pre-flight: stop service, kill child processes, backup database (update only)
@@ -384,12 +356,6 @@ upsert_key "WB_ADMIN_USERNAME"  "$ADMIN_USERNAME"
 upsert_key "WB_ADMIN_PASSWORD"  "$ADMIN_PASSWORD"
 if [[ -n "$QUICK_TOKEN" ]]; then
     upsert_key "WB_QUICK_TOKEN" "$QUICK_TOKEN"
-fi
-if [[ -n "$PROXYCHAINS_ENABLED" ]]; then
-    upsert_key "WB_PROXYCHAINS_ENABLED" "$PROXYCHAINS_ENABLED"
-    upsert_key "WB_PROXYCHAINS_TYPE" "$PROXYCHAINS_TYPE"
-    upsert_key "WB_PROXYCHAINS_HOST" "$PROXYCHAINS_HOST"
-    upsert_key "WB_PROXYCHAINS_PORT" "$PROXYCHAINS_PORT"
 fi
 upsert_key "WB_DATA_DIR"        "$APP_DIR/data"
 upsert_key "WB_BINARIES_DIR"    "$APP_DIR/binaries"
@@ -618,9 +584,6 @@ else
     fi
 fi
 echo "  Proxy:       $PROXY"
-if [[ -n "$PROXYCHAINS_ENABLED" ]]; then
-    echo "  Proxychains:  $PROXYCHAINS_TYPE://$PROXYCHAINS_HOST:$PROXYCHAINS_PORT"
-fi
 echo
 if $IS_UPDATE; then
     echo "  NOTE: on UPDATE, database was backed up to $APP_DIR/data/backups/"

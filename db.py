@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS services (
     -- extra static args appended after credentials (e.g. --resources ...)
     extra_args  TEXT NOT NULL DEFAULT '',
     enabled     INTEGER NOT NULL DEFAULT 1,
+    proxychains_type  TEXT NOT NULL DEFAULT '',
+    proxychains_host  TEXT NOT NULL DEFAULT '',
+    proxychains_port  TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -160,6 +163,15 @@ class Database:
             # Re-enable FK enforcement.
             await self._conn.execute("PRAGMA foreign_keys=ON")
             log.warning("FK migration complete (table recreated with CASCADE).")
+
+        # Migration: add proxychains columns to services if missing.
+        for col in ("proxychains_type", "proxychains_host", "proxychains_port"):
+            rows = await self._conn.execute_fetchall("PRAGMA table_info(services)")
+            svc_cols = [row[1] for row in rows]
+            if col not in svc_cols:
+                await self._conn.execute(
+                    f"ALTER TABLE services ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+                )
         await self._conn.commit()
 
     async def close(self) -> None:

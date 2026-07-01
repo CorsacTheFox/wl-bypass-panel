@@ -1176,6 +1176,26 @@ async function openServiceModal(s = {}) {
         <label class="block text-xs text-gray-500 mb-1.5 font-medium">Extra Args (optional)</label>
         <input id="mf-extra" class="input-field font-mono text-xs" value="${esc(s.extra_args || '')}" placeholder="--resources moderate" />
       </div>
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Proxy (via proxychains4)</label>
+        <select id="mf-pc-type" class="input-field text-xs">
+          <option value="" ${!s.proxychains_type ? 'selected' : ''}>Disabled</option>
+          <option value="socks5" ${s.proxychains_type === 'socks5' ? 'selected' : ''}>SOCKS5</option>
+          <option value="socks4" ${s.proxychains_type === 'socks4' ? 'selected' : ''}>SOCKS4</option>
+          <option value="http" ${s.proxychains_type === 'http' ? 'selected' : ''}>HTTP</option>
+        </select>
+        <div id="mf-pc-fields" class="${s.proxychains_type ? '' : 'hidden'} mt-2 grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-[10px] text-gray-600 mb-1">Host</label>
+            <input id="mf-pc-host" class="input-field font-mono text-xs" value="${esc(s.proxychains_host || '127.0.0.1')}" placeholder="127.0.0.1" />
+          </div>
+          <div>
+            <label class="block text-[10px] text-gray-600 mb-1">Port</label>
+            <input id="mf-pc-port" class="input-field font-mono text-xs" value="${esc(s.proxychains_port || '1080')}" placeholder="1080" />
+          </div>
+        </div>
+        <p class="text-[10px] text-gray-600 mt-1">Requires proxychains4 installed on the server. Routes all binary traffic through the proxy.</p>
+      </div>
       <label class="flex items-center gap-2.5 cursor-pointer">
         <input id="mf-svc-enabled" type="checkbox" ${s.enabled !== false ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
         <span class="text-sm text-gray-300">Enabled</span>
@@ -1199,6 +1219,13 @@ async function openServiceModal(s = {}) {
     cookieMan.classList.toggle('hidden', cookieSel.value !== '__manual__');
   });
 
+  // Toggle proxy host/port fields based on type selection.
+  const pcType = $('#mf-pc-type');
+  const pcFields = $('#mf-pc-fields');
+  pcType.addEventListener('change', () => {
+    pcFields.classList.toggle('hidden', !pcType.value);
+  });
+
   $('#modal-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('[type="submit"]');
@@ -1217,6 +1244,9 @@ async function openServiceModal(s = {}) {
       credentials: cookiesPath,
       extra_args: $('#mf-extra').value,
       enabled: $('#mf-svc-enabled').checked,
+      proxychains_type: pcType.value,
+      proxychains_host: pcType.value ? $('#mf-pc-host').value : '',
+      proxychains_port: pcType.value ? $('#mf-pc-port').value : '',
     };
     try {
       if (isEdit) {

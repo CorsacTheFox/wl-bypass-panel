@@ -1,8 +1,11 @@
 """Centralized configuration. All values are overridable via environment variables."""
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+log = logging.getLogger("config")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.getenv("WB_DATA_DIR", BASE_DIR / "data"))
@@ -42,14 +45,6 @@ PBKDF2_ITERATIONS = 200_000
 # When empty (default), the /quick route is disabled.
 QUICK_TOKEN = os.getenv("WB_QUICK_TOKEN", "")
 
-# Proxychains4 global proxy. When enabled, all instances are launched through
-# proxychains4 using an auto-generated config file.
-PROXYCHAINS_ENABLED = os.getenv("WB_PROXYCHAINS_ENABLED", "").lower() in ("1", "true", "yes")
-PROXYCHAINS_TYPE = os.getenv("WB_PROXYCHAINS_TYPE", "socks5")  # socks5, socks4, http
-PROXYCHAINS_HOST = os.getenv("WB_PROXYCHAINS_HOST", "")         # e.g. 127.0.0.1
-PROXYCHAINS_PORT = os.getenv("WB_PROXYCHAINS_PORT", "")         # e.g. 1080
-PROXYCHAINS_CONF_PATH = DATA_DIR / "proxychains.conf"
-
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -58,12 +53,9 @@ def ensure_dirs() -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def ensure_proxychains_conf() -> None:
-    """Generate proxychains.conf if proxychains is enabled and config is valid."""
-    if not PROXYCHAINS_ENABLED:
-        return
-    if not PROXYCHAINS_HOST or not PROXYCHAINS_PORT:
-        return
+def generate_proxychains_conf(conf_path: Path, proxy_type: str,
+                              proxy_host: str, proxy_port: str) -> None:
+    """Write a proxychains4 config file to *conf_path*."""
     conf = (
         "strict_chain\n"
         "proxy_dns\n"
@@ -72,6 +64,6 @@ def ensure_proxychains_conf() -> None:
         "tcp_connect_time_out 8000\n"
         "\n"
         "[ProxyList]\n"
-        f"{PROXYCHAINS_TYPE} {PROXYCHAINS_HOST} {PROXYCHAINS_PORT}\n"
+        f"{proxy_type} {proxy_host} {proxy_port}\n"
     )
-    PROXYCHAINS_CONF_PATH.write_text(conf, encoding="utf-8")
+    conf_path.write_text(conf, encoding="utf-8")

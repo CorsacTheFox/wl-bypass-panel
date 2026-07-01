@@ -97,6 +97,9 @@ class ServiceCreate(BaseModel):
     credentials: str
     extra_args: str = ""
     enabled: bool = True
+    proxychains_type: str = ""
+    proxychains_host: str = ""
+    proxychains_port: str = ""
 
 
 class ServiceUpdate(BaseModel):
@@ -105,6 +108,9 @@ class ServiceUpdate(BaseModel):
     credentials: str | None = None
     extra_args: str | None = None
     enabled: bool | None = None
+    proxychains_type: str | None = None
+    proxychains_host: str | None = None
+    proxychains_port: str | None = None
 
 
 @router.get("/services")
@@ -116,7 +122,10 @@ async def list_services():
 async def create_service(body: ServiceCreate):
     try:
         return await service_registry.create(
-            body.name, body.binary_path, body.credentials, body.extra_args, body.enabled
+            body.name, body.binary_path, body.credentials, body.extra_args, body.enabled,
+            proxychains_type=body.proxychains_type,
+            proxychains_host=body.proxychains_host,
+            proxychains_port=body.proxychains_port,
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))

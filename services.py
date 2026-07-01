@@ -201,11 +201,15 @@ user_service = UserService()
 # --------------------------------------------------------------------------- #
 class ServiceRegistry:
     async def create(self, name: str, binary_path: str, credentials: str,
-                     extra_args: str = "", enabled: bool = True) -> dict:
+                     extra_args: str = "", enabled: bool = True,
+                     proxychains_type: str = "", proxychains_host: str = "",
+                     proxychains_port: str = "") -> dict:
         cur = await db.execute(
-            """INSERT INTO services (name, binary_path, credentials, extra_args, enabled)
-               VALUES (?,?,?,?,?)""",
-            (name, binary_path, credentials, extra_args, 1 if enabled else 0),
+            """INSERT INTO services (name, binary_path, credentials, extra_args, enabled,
+                                  proxychains_type, proxychains_host, proxychains_port)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (name, binary_path, credentials, extra_args, 1 if enabled else 0,
+             proxychains_type, proxychains_host, proxychains_port),
         )
         return await self.get(cur.lastrowid)
 
@@ -217,12 +221,16 @@ class ServiceRegistry:
 
     async def list(self) -> list[dict]:
         rows = await db.fetchall(
-            "SELECT id, name, binary_path, credentials, extra_args, enabled, created_at FROM services ORDER BY id"
+            """SELECT id, name, binary_path, credentials, extra_args, enabled,
+                      proxychains_type, proxychains_host, proxychains_port,
+                      created_at
+                 FROM services ORDER BY id"""
         )
         return [dict(r) for r in rows]
 
     async def update(self, service_id: int, **fields) -> dict:
-        allowed = {"name", "binary_path", "credentials", "extra_args", "enabled"}
+        allowed = {"name", "binary_path", "credentials", "extra_args", "enabled",
+                   "proxychains_type", "proxychains_host", "proxychains_port"}
         sets, params = [], []
         for k, v in fields.items():
             if k not in allowed:
@@ -535,6 +543,9 @@ class InstanceService:
                 binary_path=svc["binary_path"],
                 credentials=svc["credentials"],
                 extra_args=svc["extra_args"] or "",
+                proxy_type=svc.get("proxychains_type", ""),
+                proxy_host=svc.get("proxychains_host", ""),
+                proxy_port=svc.get("proxychains_port", ""),
             )
         except ProcessError as e:
             # spawn failed; row already marked crashed inside process_manager

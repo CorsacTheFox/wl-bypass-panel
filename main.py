@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import ADMIN_PASSWORD, ADMIN_USERNAME, BASE_DIR, ensure_dirs, ensure_proxychains_conf
+from config import ADMIN_PASSWORD, ADMIN_USERNAME, BASE_DIR, ensure_dirs
 from db import db
 from process_manager import process_manager
 from routers import admin as admin_router
@@ -59,7 +59,6 @@ async def _reconcile_stale_instances() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_dirs()
-    ensure_proxychains_conf()
     await db.connect()
     await user_service.ensure_bootstrap_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
     await _reconcile_stale_instances()

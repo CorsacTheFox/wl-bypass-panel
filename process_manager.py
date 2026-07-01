@@ -34,9 +34,8 @@ from config import (
     ERROR_TAIL_BYTES,
     LOGS_DIR,
     PROCESS_KILL_GRACE_SECONDS,
-    PROXYCHAINS_ENABLED,
-    PROXYCHAINS_CONF_PATH,
     REAPER_INTERVAL_SECONDS,
+    generate_proxychains_conf,
 )
 from db import db
 
@@ -130,6 +129,9 @@ class ProcessManager:
         credentials: str,
         extra_args: str = "",
         env: Optional[dict[str, str]] = None,
+        proxy_type: str = "",
+        proxy_host: str = "",
+        proxy_port: str = "",
     ) -> int:
         """Spawn the binary for `instance_id`. Returns the child PID.
 
@@ -139,11 +141,28 @@ class ProcessManager:
         (some binaries — e.g. the *-joiner tools — take no cookies at all).
         Extra args configured per service are appended verbatim.
 
+        If *proxy_type* is non-empty (socks5/socks4/http) and *proxy_host* /
+        *proxy_port* are set, a per-instance proxychains4 config is generated
+        and the command is wrapped through proxychains4.
+
         stdout+stderr of the binary are tee'd to ``LOGS_DIR/instance-<id>.log``
         so crashes are diagnosable; on non-zero exit the tail of that log is
         written to ``instances.error``.
         """
         args = self._build_command(binary_path, credentials, extra_args)
+
+        # Wrap with proxychains4 if a proxy is configured for this service.
+        if proxy_type and proxy_host and proxy_port:
+            import shutil
+            pc4 = shutil.which("proxychains4")
+            if pc4:
+                conf_path = LOGS_DIR / f"instance-{instance_id}-proxychains.conf"
+                generate_proxychains_conf(conf_path, proxy_type, proxy_host, proxy_port)
+                log.info("proxychains4 enabled for instance %d: %s://%s:%s",
+                         instance_id, proxy_type, proxy_host, proxy_port)
+                args = [pc4, "-f", str(conf_path)] + args
+            else:
+                log.warning("proxychains4 requested but binary not found in PATH — launching without proxy")
 
         # One log file per instance lifecycle, opened for the child to inherit.
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -201,9 +220,8 @@ class ProcessManager:
         are appended verbatim — set a different flag there if a binary needs
         e.g. ``-cookie-string`` instead.
 
-        When proxychains4 is enabled globally (config.PROXYCHAINS_ENABLED) and
-        the auto-generated config file exists, the command is wrapped with
-        ``proxychains4 -f <conf_path>``.
+        Proxy wrapping (if configured per-service) is handled in `spawn()`,
+        not here.
         """
         cmd = [binary_path]
         cred = (credentials or "").strip()
@@ -211,11 +229,6 @@ class ProcessManager:
             cmd.extend([COOKIE_FLAG, cred])
         if extra_args and extra_args.strip():
             cmd.extend(shlex.split(extra_args))
-
-        # Wrap with proxychains4 if globally enabled.
-        if PROXYCHAINS_ENABLED and PROXYCHAINS_CONF_PATH.exists():
-            cmd = ["proxychains4", "-f", str(PROXYCHAINS_CONF_PATH)] + cmd
-
         return cmd
 
     # ------------------------------------------------------------------ #
