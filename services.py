@@ -701,6 +701,9 @@ class InstanceService:
     async def utilization(self, user_id: int) -> dict:
         user = await user_service.get(user_id)
         active = await self._active_count(user_id)
+        # Admins have no cap.
+        if user["role"] == "admin":
+            return {"active": active, "max": None, "remaining": None}
         return {
             "active": active,
             "max": user["max_concurrent"],
@@ -710,13 +713,15 @@ class InstanceService:
     async def start(self, user_id: int, service_id: int,
                     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
                     is_quick: bool = False) -> dict:
-        # 1. concurrency check (the core business rule)
+        # 1. concurrency check (the core business rule).
+        # Admins bypass the cap — unlimited concurrent instances.
         user = await user_service.get(user_id)
-        active = await self._active_count(user_id)
-        if active >= user["max_concurrent"]:
-            raise ConcurrencyLimitError(
-                f"Concurrent limit reached ({active}/{user['max_concurrent']})"
-            )
+        if user["role"] != "admin":
+            active = await self._active_count(user_id)
+            if active >= user["max_concurrent"]:
+                raise ConcurrencyLimitError(
+                    f"Concurrent limit reached ({active}/{user['max_concurrent']})"
+                )
         # 1b. instance-creation privilege. Admins always pass; everyone else
         # must be explicitly granted via users.can_create_instances.
         if user["role"] != "admin" and not user.get("can_create_instances"):

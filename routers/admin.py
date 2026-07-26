@@ -87,8 +87,18 @@ async def set_can_create_bulk(body: CanCreateBulkIn):
 
 
 @router.patch("/clients/{client_id}")
-async def update_client(client_id: int, body: ClientUpdate):
+async def update_client(client_id: int, body: ClientUpdate, admin=Depends(require_admin)):
     try:
+        # Prevent an admin from locking themselves out: disabling your own
+        # account, demoting yourself, or clearing your own create-privilege
+        # would invalidate your session (401) with no way back in.
+        if client_id == admin["id"]:
+            if body.enabled is False:
+                raise ValueError("you cannot disable your own account")
+            if body.role == "client":
+                raise ValueError("you cannot demote yourself (use another admin)")
+            if body.can_create_instances is False:
+                raise ValueError("you cannot remove your own create privilege")
         # Role change is a dedicated path with last-admin protection.
         if body.role is not None:
             await user_service.set_role(client_id, body.role)

@@ -784,15 +784,18 @@ async function refreshDashboard() {
 
     // --- Utilization ---
     $('#util-active').textContent = util.active;
-    $('#util-max').textContent = util.max;
-    const pct = util.max > 0 ? Math.min(100, Math.round((util.active / util.max) * 100)) : 0;
-    $('#util-pct').textContent = pct + '%';
+    const unlimited = util.max === null || util.max === undefined;
+    $('#util-max').textContent = unlimited ? '∞' : util.max;
+    const pct = unlimited ? 0 : (util.max > 0 ? Math.min(100, Math.round((util.active / util.max) * 100)) : 0);
+    $('#util-pct').textContent = unlimited ? '—' : (pct + '%');
     const bar = $('#util-bar');
-    bar.style.width = pct + '%';
-    bar.style.background = pct >= 100 ? '#ef4444' : '#8b5cf6';
-    $('#util-hint').textContent = util.remaining > 0
-      ? util.remaining + ' of ' + util.max + ' slots available'
-      : 'All slots in use';
+    bar.style.width = (unlimited ? 0 : pct) + '%';
+    bar.style.background = unlimited ? '#8b5cf6' : (pct >= 100 ? '#ef4444' : '#8b5cf6');
+    $('#util-hint').textContent = unlimited
+      ? 'Unlimited instances (admin)'
+      : (util.remaining > 0
+        ? util.remaining + ' of ' + util.max + ' slots available'
+        : 'All slots in use');
 
     // --- Service select ---
     const sel = $('#sel-service');
