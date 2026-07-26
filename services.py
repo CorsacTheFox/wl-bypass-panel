@@ -314,7 +314,7 @@ class ServiceRegistry:
         cur = await db.execute(
             """INSERT INTO services (name, binary_path, credentials, extra_args, enabled,
                                   proxychains_type, proxychains_host, proxychains_port)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?)""",
             (name, binary_path, credentials, extra_args, 1 if enabled else 0,
              proxychains_type, proxychains_host, proxychains_port),
         )
