@@ -639,7 +639,8 @@ async function bootstrap() {
 
   $('#page-login').classList.add('hidden');
 
-  // If password must be changed, show password-change screen instead of app
+  // If password must be changed, show password-change screen instead of app.
+  // Telegram-linked accounts never require this (validated cryptographically).
   if (currentUser.must_change_password) {
     $('#page-password-change').classList.remove('hidden');
     $('#page-app').classList.add('hidden');
@@ -648,15 +649,19 @@ async function bootstrap() {
 
   $('#page-password-change').classList.add('hidden');
   $('#page-app').classList.remove('hidden');
-  $('#user-avatar').textContent = currentUser.username[0].toUpperCase();
+  $('#user-avatar').textContent = (currentUser.username || '?')[0].toUpperCase();
   $('#user-info').textContent = currentUser.username;
 
   // Reflect the instance-creation privilege in the Launch card. Admins always
   // pass; everyone else must have can_create_instances granted by an admin.
-  applyPrivilegeGate();
-
-  buildNav();
-  switchTab(currentTab);
+  // Any failure here must NOT block the app shell from rendering.
+  try {
+    applyPrivilegeGate();
+    buildNav();
+    switchTab(currentTab);
+  } catch (uiErr) {
+    console.error('bootstrap UI setup failed (non-fatal):', uiErr);
+  }
 }
 
 /* --- Instance-creation privilege gate (dashboard Launch card) --- */

@@ -109,6 +109,7 @@ PUBLIC_PORT="${PUBLIC_PORT:-80}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 QUICK_TOKEN="${QUICK_TOKEN:-}"
+TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 
 # When updating, seed defaults from the existing .env so the user can just
 # press Enter through all prompts without re-entering everything.
@@ -119,6 +120,7 @@ if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
     APP_HOST="${APP_HOST:-$(_env_get WB_HOST)}"
     APP_PORT="${APP_PORT:-$(_env_get WB_PORT)}"
     QUICK_TOKEN="${QUICK_TOKEN:-$(_env_get WB_QUICK_TOKEN)}"
+    TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-$(_env_get WB_TELEGRAM_BOT_TOKEN)}"
 fi
 
 echo
@@ -171,6 +173,7 @@ else
 fi
 
 prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
+prompt TELEGRAM_BOT_TOKEN "Telegram Mini App bot token (blank = disabled)" "$TELEGRAM_BOT_TOKEN"
 
 # #############################################################################
 # 1b. Pre-flight: stop service, kill child processes, backup database (update only)
@@ -286,9 +289,19 @@ if command -v rsync >/dev/null 2>&1; then
         --exclude '.git' --exclude '*.pyc' --exclude '.DS_Store' \
         "$SRC_DIR"/ "$APP_DIR"/
 else
+    # rsync absent: mirror source by hand, but PRESERVE data/ (DB, cookies,
+    # logs) — move it aside, wipe, copy, restore. Without this the cp fallback
+    # would delete data/app.db on every re-run of the installer.
+    if [[ -d "$APP_DIR/data" ]]; then
+        mv "$APP_DIR/data" "$APP_DIR/.data.preserve.$$"
+    fi
     rm -rf "$APP_DIR"/* "$APP_DIR"/.* 2>/dev/null || true
     cp -a "$SRC_DIR"/. "$APP_DIR"/
     find "$APP_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} +
+    if [[ -d "$APP_DIR/.data.preserve.$$" ]]; then
+        rm -rf "$APP_DIR/data" 2>/dev/null || true
+        mv "$APP_DIR/.data.preserve.$$" "$APP_DIR/data"
+    fi
 fi
 mkdir -p "$APP_DIR/data" "$APP_DIR/binaries"
 ok "App files copied"
@@ -356,6 +369,12 @@ upsert_key "WB_ADMIN_USERNAME"  "$ADMIN_USERNAME"
 upsert_key "WB_ADMIN_PASSWORD"  "$ADMIN_PASSWORD"
 if [[ -n "$QUICK_TOKEN" ]]; then
     upsert_key "WB_QUICK_TOKEN" "$QUICK_TOKEN"
+fi
+if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
+    upsert_key "WB_TELEGRAM_BOT_TOKEN" "$TELEGRAM_BOT_TOKEN"
+else
+    # Remove any stale token from a previous install so TG auth is cleanly disabled.
+    sed -i '/^WB_TELEGRAM_BOT_TOKEN=/d' "$APP_DIR/.env" 2>/dev/null || true
 fi
 upsert_key "WB_DATA_DIR"        "$APP_DIR/data"
 upsert_key "WB_BINARIES_DIR"    "$APP_DIR/binaries"
