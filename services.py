@@ -37,6 +37,10 @@ class ConcurrencyLimitError(Exception):
     """User has reached their concurrent-instance cap."""
 
 
+class ForbiddenError(Exception):
+    """User is not allowed to perform this action (e.g. instance creation off)."""
+
+
 class NotFoundError(Exception):
     pass
 
@@ -57,6 +61,9 @@ class UserService:
         password: str | None = None,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
         external_ref: str | None = None,
+        telegram_id: int | None = None,
+        can_create_instances: bool = False,
+        must_change_password: bool | None = None,
     ) -> dict:
         username = (username or "").strip()
         if not username:
@@ -70,13 +77,19 @@ class UserService:
         else:
             pw_hash = ""  # empty placeholder — authenticate() will skip verification
             must_change = 1
+        # Explicit override (used by the Telegram auto-create path, which has
+        # no password but must not force a password-change screen).
+        if must_change_password is not None:
+            must_change = 1 if must_change_password else 0
         try:
             cur = await db.execute(
                 """
-                INSERT INTO users (username, password_hash, role, max_concurrent, external_ref, password_must_change)
-                VALUES (?, ?, 'client', ?, ?, ?)
+                INSERT INTO users (username, password_hash, role, max_concurrent, external_ref,
+                                   password_must_change, telegram_id, can_create_instances)
+                VALUES (?, ?, 'client', ?, ?, ?, ?, ?)
                 """,
-                (username, pw_hash, max_concurrent, external_ref, must_change),
+                (username, pw_hash, max_concurrent, external_ref, must_change,
+                 telegram_id, 1 if can_create_instances else 0),
             )
         except Exception as e:  # unique violation etc.
             raise ValueError(f"could not create user: {e}") from e
@@ -85,7 +98,8 @@ class UserService:
     async def create_admin(self, username: str, password: str) -> dict:
         pw_hash = hash_password(password)
         cur = await db.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?,?, 'admin')",
+            "INSERT INTO users (username, password_hash, role, can_create_instances) "
+            "VALUES (?,?, 'admin', 1)",
             (username, pw_hash),
         )
         return await self.get(cur.lastrowid)
@@ -98,7 +112,8 @@ class UserService:
     async def get(self, user_id: int) -> dict:
         row = await db.fetchone(
             """SELECT id, username, role, max_concurrent, external_ref,
-                      created_at, enabled FROM users WHERE id=?""",
+                      created_at, enabled, telegram_id, can_create_instances
+                 FROM users WHERE id=?""",
             (user_id,),
         )
         if row is None:
@@ -108,7 +123,7 @@ class UserService:
     async def list_clients(self) -> list[dict]:
         rows = await db.fetchall(
             """SELECT u.id, u.username, u.role, u.max_concurrent, u.external_ref,
-                      u.created_at, u.enabled,
+                      u.created_at, u.enabled, u.telegram_id, u.can_create_instances,
                       (SELECT COUNT(*) FROM instances i
                          WHERE i.user_id=u.id AND i.status IN ('pending','running','stopping')) AS active
                FROM users u ORDER BY u.id"""
@@ -145,7 +160,8 @@ class UserService:
 
     async def update(self, user_id: int, *, password: str | None = None,
                      max_concurrent: int | None = None,
-                     enabled: bool | None = None) -> dict:
+                     enabled: bool | None = None,
+                     can_create_instances: bool | None = None) -> dict:
         sets, params = [], []
         if password is not None:
             sets.append("password_hash=?"); params.append(hash_password(password))
@@ -153,6 +169,8 @@ class UserService:
             sets.append("max_concurrent=?"); params.append(max_concurrent)
         if enabled is not None:
             sets.append("enabled=?"); params.append(1 if enabled else 0)
+        if can_create_instances is not None:
+            sets.append("can_create_instances=?"); params.append(1 if can_create_instances else 0)
         if sets:
             params.append(user_id)
             await db.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", tuple(params))
@@ -172,6 +190,95 @@ class UserService:
             (pw_hash, user_id),
         )
         return await self.get(user_id)
+
+    # ------------------------------------------------------------------ #
+    # Telegram linkage + instance-creation privilege (TMA support)
+    # ------------------------------------------------------------------ #
+    async def find_by_telegram(self, telegram_id: int) -> dict | None:
+        row = await db.fetchone("SELECT id FROM users WHERE telegram_id=?", (telegram_id,))
+        return dict(row) if row else None
+
+    async def find_by_username(self, username: str) -> dict | None:
+        # username column is COLLATE NOCASE, so the lookup is case-insensitive.
+        row = await db.fetchone("SELECT id FROM users WHERE username=?", (username,))
+        return dict(row) if row else None
+
+    async def link_telegram(self, user_id: int, telegram_id: int) -> dict:
+        """Attach a telegram_id to an existing account.
+
+        Raises ValueError if the telegram_id is already linked elsewhere
+        (the partial unique index enforces this at the DB level).
+        """
+        try:
+            await db.execute(
+                "UPDATE users SET telegram_id=? WHERE id=?", (telegram_id, user_id)
+            )
+        except Exception as e:
+            raise ValueError(f"telegram_id already linked to another account: {e}") from e
+        return await self.get(user_id)
+
+    async def get_or_create_for_telegram(self, telegram_id: int, username: str | None) -> dict:
+        """Resolve a Telegram user to a local account.
+
+        Order (matches the chosen TMA policy):
+          1. already linked by telegram_id -> return it (the re-login case);
+          2. else an existing local user with the same username -> link it;
+          3. else auto-create a passwordless client.
+
+        Auto-created accounts default to can_create_instances=False (an admin
+        must grant the privilege) and skip the must-change-password screen.
+        """
+        # 1. existing link
+        linked = await self.find_by_telegram(telegram_id)
+        if linked:
+            return await self.get(linked["id"])
+
+        # 2. match by username (sanitized) — case-insensitive
+        if username:
+            username = self._sanitize_tg_username(username)
+            match = await self.find_by_username(username)
+            if match:
+                return await self.link_telegram(match["id"], telegram_id)
+
+        # 3. auto-create
+        return await self.create_client(
+            username=username or f"tg_{telegram_id}",
+            password=None,
+            telegram_id=telegram_id,
+            can_create_instances=False,
+            must_change_password=False,
+        )
+
+    @staticmethod
+    def _sanitize_tg_username(username: str) -> str:
+        # Telegram usernames are [A-Za-z0-9_], 5-32 chars. We lower-case them so
+        # a TG "@Foo" matches a local "foo" account, and strip a leading '@'.
+        name = username.strip().lstrip("@")
+        return name or None  # type: ignore[return-value]
+
+    async def set_can_create_bulk(
+        self, usernames: list[str], value: bool
+    ) -> dict:
+        """Grant or revoke instance-creation privilege for many users at once.
+
+        Matches by username (case-insensitive). Returns the lists of updated
+        usernames and usernames that could not be found.
+        """
+        updated, not_found = [], []
+        bit = 1 if value else 0
+        for name in usernames:
+            name = name.strip()
+            if not name:
+                continue
+            cur = await db.execute(
+                "UPDATE users SET can_create_instances=? WHERE username=?",
+                (bit, name),
+            )
+            if cur.rowcount:
+                updated.append(name)
+            else:
+                not_found.append(name)
+        return {"updated": updated, "not_found": not_found, "value": value}
 
     async def create_clients_bulk(
         self, usernames: list[str], max_concurrent: int = DEFAULT_MAX_CONCURRENT
@@ -520,6 +627,10 @@ class InstanceService:
             raise ConcurrencyLimitError(
                 f"Concurrent limit reached ({active}/{user['max_concurrent']})"
             )
+        # 1b. instance-creation privilege. Admins always pass; everyone else
+        # must be explicitly granted via users.can_create_instances.
+        if user["role"] != "admin" and not user.get("can_create_instances"):
+            raise ForbiddenError("Instance creation is disabled for this account")
 
         # 2. resolve service config
         svc = await service_registry.get(service_id)

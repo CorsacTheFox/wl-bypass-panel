@@ -27,6 +27,7 @@ from routers import admin as admin_router
 from routers import auth as auth_router
 from routers import client as client_router
 from routers import quick as quick_router
+from routers import telegram as telegram_router
 from services import user_service
 
 logging.basicConfig(
@@ -76,6 +77,7 @@ app = FastAPI(title="Whitelist-Bypass Instance Manager", lifespan=lifespan)
 
 # Routers
 app.include_router(auth_router.router)
+app.include_router(telegram_router.router)
 app.include_router(admin_router.router)
 app.include_router(client_router.router)
 app.include_router(quick_router.router)

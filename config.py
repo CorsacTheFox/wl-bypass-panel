@@ -45,6 +45,15 @@ PBKDF2_ITERATIONS = 200_000
 # When empty (default), the /quick route is disabled.
 QUICK_TOKEN = os.getenv("WB_QUICK_TOKEN", "")
 
+# Telegram Mini App (WebApp) authorization.
+# Set to the bot token obtained from BotFather to enable Telegram login.
+# When empty (default), POST /api/auth/telegram is disabled (returns 404),
+# mirroring the QUICK_TOKEN gating pattern.
+TELEGRAM_BOT_TOKEN = os.getenv("WB_TELEGRAM_BOT_TOKEN", "")
+# Maximum age (in seconds) of a Telegram initData before it is rejected as a
+# replay. Telegram recommends keeping this short; 24h matches the session TTL.
+TELEGRAM_INIT_DATA_MAX_AGE = int(os.getenv("WB_TG_INITDATA_MAX_AGE", str(24 * 3600)))
+
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from security import require_client
 from services import (
     ConcurrencyLimitError,
+    ForbiddenError,
     NotFoundError,
     instance_service,
     service_registry,
@@ -50,6 +51,8 @@ async def start_call(body: StartCallIn, user=Depends(require_client)):
         return await instance_service.start(
             user["id"], body.service_id, body.timeout_seconds or 3600
         )
+    except ForbiddenError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ConcurrencyLimitError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except NotFoundError:

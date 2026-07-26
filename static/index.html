@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Instance Manager</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Telegram Mini App SDK. When the page is opened inside Telegram, this
+       injects window.Telegram.WebApp with the signed initData string. Loaded
+       synchronously so the auto-login branch in the init IIFE can use it. -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -246,6 +250,10 @@
               Start
             </button>
           </div>
+          <!-- Privilege notice: shown when the user may not launch instances. -->
+          <div id="launch-disabled" class="hidden mt-3 text-xs rounded-lg px-3 py-2 text-yellow-400 bg-yellow-400/10">
+            Instance creation is disabled for your account. Contact an administrator to request access.
+          </div>
           <div id="launch-msg" class="hidden mt-3 text-xs rounded-lg px-3 py-2"></div>
         </div>
       </div>
@@ -291,6 +299,10 @@
           <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
             <h2 class="text-white font-semibold text-sm">Clients</h2>
             <div class="flex items-center gap-2">
+              <button id="btn-grant-access" class="btn btn-ghost text-xs py-1.5" title="Grant or revoke instance creation for a list of usernames">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Grant Access
+              </button>
               <button id="btn-bulk-create" class="btn btn-ghost text-xs py-1.5" title="Create multiple clients at once">
                 <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
                 Bulk
@@ -307,6 +319,7 @@
                 <th class="text-left font-medium px-5 py-2.5">Username</th>
                 <th class="text-left font-medium px-5 py-2.5">Slots</th>
                 <th class="text-left font-medium px-5 py-2.5">Active</th>
+                <th class="text-left font-medium px-5 py-2.5">Create?</th>
                 <th class="text-left font-medium px-5 py-2.5">Status</th>
                 <th class="text-right font-medium px-5 py-2.5">Actions</th>
               </tr></thead>
@@ -581,8 +594,25 @@ async function bootstrap() {
   $('#user-avatar').textContent = currentUser.username[0].toUpperCase();
   $('#user-info').textContent = currentUser.username;
 
+  // Reflect the instance-creation privilege in the Launch card. Admins always
+  // pass; everyone else must have can_create_instances granted by an admin.
+  applyPrivilegeGate();
+
   buildNav();
   switchTab(currentTab);
+}
+
+/* --- Instance-creation privilege gate (dashboard Launch card) --- */
+function canCreateInstances() {
+  return currentUser.role === 'admin' || !!currentUser.can_create_instances;
+}
+
+function applyPrivilegeGate() {
+  const allowed = canCreateInstances();
+  const btn = $('#btn-start');
+  const notice = $('#launch-disabled');
+  if (btn) btn.disabled = !allowed;
+  if (notice) notice.classList.toggle('hidden', allowed);
 }
 
 /* --- Navigation tabs --- */
@@ -748,6 +778,11 @@ function getTimeoutSeconds() {
 
 /* --- Start call --- */
 $('#btn-start').addEventListener('click', async () => {
+  // Privilege gate: refuse client-side if the account may not launch.
+  if (!canCreateInstances()) {
+    showLaunchMsg('Instance creation is disabled for your account', false);
+    return;
+  }
   const svcId = parseInt($('#sel-service').value);
   const timeout = getTimeoutSeconds();
   const btn = $('#btn-start');
@@ -760,7 +795,10 @@ $('#btn-start').addEventListener('click', async () => {
     refreshDashboard();
   } catch (err) {
     showLaunchMsg(err.message, false);
-  } finally { btn.disabled = false; }
+  } finally {
+    // Restore the privilege-gated disabled state (don't blindly re-enable).
+    applyPrivilegeGate();
+  }
 });
 
 /* --- Stop instance (delegated) --- */
@@ -814,6 +852,12 @@ async function refreshAdmin() {
         <td class="px-5 py-3 text-gray-400">${c.max_concurrent}</td>
         <td class="px-5 py-3 text-gray-400">${c.active ?? 0}</td>
         <td class="px-5 py-3">
+          <span class="badge" style="color:${c.can_create_instances ? '#22c55e' : '#6b7280'};background:${c.can_create_instances ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)'}">
+            <span class="dot" style="background:${c.can_create_instances ? '#22c55e' : '#6b7280'}"></span>
+            ${c.can_create_instances ? 'yes' : 'no'}
+          </span>
+        </td>
+        <td class="px-5 py-3">
           <span class="badge" style="color:${c.enabled ? '#22c55e' : '#6b7280'};background:${c.enabled ? 'rgba(34,197,94,0.1)' : 'rgba(107,114,128,0.1)'}">
             <span class="dot" style="background:${c.enabled ? '#22c55e' : '#6b7280'}"></span>
             ${c.enabled ? 'enabled' : 'disabled'}
@@ -821,7 +865,8 @@ async function refreshAdmin() {
         </td>
         <td class="px-5 py-3 text-right space-x-2">
           <button class="btn btn-ghost text-xs py-1 px-2.5" data-action="edit-client" data-id="${c.id}"
-            data-username="${esc(c.username)}" data-max="${c.max_concurrent}" data-enabled="${c.enabled}">Edit</button>
+            data-username="${esc(c.username)}" data-max="${c.max_concurrent}" data-enabled="${c.enabled}"
+            data-cancreate="${c.can_create_instances ? 1 : 0}">Edit</button>
           <button class="btn btn-danger text-xs py-1 px-2.5" data-action="del-client" data-id="${c.id}">Del</button>
         </td>
       </tr>`).join('');
@@ -885,6 +930,7 @@ document.addEventListener('click', async (e) => {
       username: btn.dataset.username,
       max_concurrent: +btn.dataset.max,
       enabled: btn.dataset.enabled === 'true',
+      can_create_instances: btn.dataset.cancreate === '1',
     });
   }
   if (action === 'del-client') {
@@ -901,6 +947,7 @@ document.addEventListener('click', async (e) => {
 
 $('#btn-new-client').addEventListener('click', () => openClientModal());
 $('#btn-bulk-create').addEventListener('click', () => openBulkCreateModal());
+$('#btn-grant-access').addEventListener('click', () => openGrantAccessModal());
 $('#btn-new-service').addEventListener('click', () => openServiceModal());
 
 /* --- Binaries zip upload (admin) --- */
@@ -1037,6 +1084,57 @@ function openBulkCreateModal() {
   });
 }
 
+/* --- Grant/revoke instance-creation privilege modal (admin) --- */
+function openGrantAccessModal() {
+  openModal(`
+    <h3 class="text-white font-semibold text-base mb-1">Grant / Revoke Access</h3>
+    <p class="text-xs text-gray-500 mb-5">Enable or disable instance creation for a list of usernames at once.</p>
+    <form id="modal-form" class="space-y-4">
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Usernames (comma- or newline-separated)</label>
+        <textarea id="mf-grant-usernames" class="input-field" rows="5" placeholder="user1, user2, user3" required></textarea>
+      </div>
+      <label class="flex items-center gap-2.5 cursor-pointer">
+        <input id="mf-grant-value" type="checkbox" checked class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+        <span class="text-sm text-gray-300">Allow instance creation</span>
+      </label>
+      <div id="grant-result" class="hidden text-xs rounded-lg px-3 py-2"></div>
+      <div class="flex gap-3 pt-2">
+        <button type="submit" class="btn btn-primary flex-1">Apply</button>
+        <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      </div>
+    </form>
+  `);
+
+  $('#modal-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('[type="submit"]');
+    btn.disabled = true;
+    const resultEl = $('#grant-result');
+    resultEl.classList.add('hidden');
+    try {
+      const res = await api.post('/api/admin/clients/can-create', {
+        usernames: $('#mf-grant-usernames').value,
+        value: $('#mf-grant-value').checked,
+      });
+      const updated = res.updated?.length || 0;
+      const missing = res.not_found?.length || 0;
+      resultEl.classList.remove('hidden');
+      if (missing > 0) {
+        resultEl.className = 'text-xs rounded-lg px-3 py-2 text-yellow-400 bg-yellow-400/10';
+        resultEl.innerHTML = `Updated ${updated} user(s). Not found: ${esc(res.not_found.join(', '))}`;
+      } else {
+        resultEl.className = 'text-xs rounded-lg px-3 py-2 text-green-400 bg-green-400/10';
+        resultEl.textContent = `Updated ${updated} user(s).`;
+      }
+      toast(`Access ${res.value ? 'granted' : 'revoked'} for ${updated} user(s)`);
+      refreshAdmin();
+    } catch (err) {
+      toast(err.message, 'err');
+    } finally { btn.disabled = false; }
+  });
+}
+
 /* --- Client modal --- */
 function openClientModal(c = {}) {
   const isEdit = !!c.id;
@@ -1069,7 +1167,12 @@ function openClientModal(c = {}) {
       <label class="flex items-center gap-2.5 cursor-pointer">
         <input id="mf-enabled" type="checkbox" ${c.enabled ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
         <span class="text-sm text-gray-300">Enabled</span>
-      </label>` : ''}
+      </label>
+      <label class="flex items-center gap-2.5 cursor-pointer">
+        <input id="mf-cancreate" type="checkbox" ${c.can_create_instances ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+        <span class="text-sm text-gray-300">Can create instances</span>
+      </label>
+      <p class="text-[10px] text-gray-600 -mt-2">When off, this client cannot launch new calls (existing ones keep running).</p>` : ''}
       <div class="flex gap-3 pt-2">
         <button type="submit" class="btn btn-primary flex-1">${isEdit ? 'Save Changes' : 'Create Client'}</button>
         <button type="button" class="btn btn-ghost" onclick="closeModal()">Cancel</button>
@@ -1099,6 +1202,7 @@ function openClientModal(c = {}) {
     try {
       if (isEdit) {
         payload.enabled = $('#mf-enabled').checked;
+        payload.can_create_instances = $('#mf-cancreate').checked;
         await api.patch('/api/admin/clients/' + c.id, payload);
         toast('Client updated');
       } else {
@@ -1264,9 +1368,37 @@ async function openServiceModal(s = {}) {
 }
 
 /* =========================================================================
-   INIT: try to restore session, otherwise show login
+   INIT: try Telegram auto-login, then restore session, otherwise show login
    ========================================================================= */
 (async () => {
+  // Align the Telegram chrome with the app's dark surface.
+  try {
+    const tg = window.Telegram?.WebApp;
+    if (tg) {
+      tg.ready();
+      tg.expand();
+      if (tg.setHeaderColor) tg.setHeaderColor('#08080a');
+      if (tg.setBackgroundColor) tg.setBackgroundColor('#08080a');
+    }
+  } catch { /* not running inside Telegram — ignore */ }
+
+  // If opened as a Telegram Mini App, auto-authenticate via the signed
+  // initData. Falls through to the normal login/restore path on any failure
+  // so the page still works in a regular browser.
+  if (window.Telegram?.WebApp?.initData && !api.token) {
+    try {
+      const r = await api.post('/api/auth/telegram', { initData: window.Telegram.WebApp.initData });
+      api.token = r.token;
+      localStorage.setItem(TOKEN_KEY, r.token);
+      toast('Signed in as ' + r.username + ' (Telegram)');
+      await bootstrap();
+      return;
+    } catch (err) {
+      // Surface the error but keep going to the login screen.
+      console.warn('Telegram auth failed:', err.message);
+    }
+  }
+
   if (api.token) {
     try { await bootstrap(); } catch { renderLogin(); }
   } else {

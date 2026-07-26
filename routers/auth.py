@@ -58,4 +58,5 @@ async def me(user=Depends(get_current_user)):
         "role": user["role"],
         "max_concurrent": user["max_concurrent"],
         "must_change_password": user.get("must_change_password", False),
+        "can_create_instances": user.get("can_create_instances", False),
     }

@@ -186,6 +186,62 @@ sudo bash /tmp/whitelist-manager/deploy/install.sh
 | `WB_DEFAULT_TIMEOUT_SECONDS` | `3600` | Auto-stop an instance after N seconds |
 | `WB_KILL_GRACE_SECONDS` | `5` | SIGTERM → wait → SIGKILL grace |
 | `WB_SESSION_TTL` | `43200` (12h) | Login token lifetime |
+| `WB_TELEGRAM_BOT_TOKEN` | _(empty)_ | Telegram Mini App bot token (from BotFather). Empty = TMA login disabled (returns 404) |
+| `WB_TG_INITDATA_MAX_AGE` | `86400` (24h) | Reject Telegram `initData` older than N seconds (replay guard) |
+
+---
+
+## Telegram Mini App (TMA)
+
+The dashboard also runs as a **Telegram Mini App**: when opened inside Telegram,
+the page auto-logs the user in via the signed `initData` string and then behaves
+exactly like the browser version. The existing username/password login is kept
+for browser access — both paths issue the same opaque bearer session.
+
+### Setup
+
+1. **Create the bot** via [@BotFather](https://t.me/BotFather) → `/newbot`.
+2. **Configure the Mini App**: in BotFather, open your bot → *Bot Settings* →
+   *Menu Button* / *Mini App Settings* → set the **Mini App URL** to your
+   deployed `https://<your-domain>/` (Telegram requires HTTPS).
+3. **Enable on the server**: set the bot token (the one BotFather gives you,
+   e.g. `123456:ABC-DEF...`):
+   ```bash
+   export WB_TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+   ```
+   When unset, `POST /api/auth/telegram` returns 404 (disabled), and the page
+   simply shows the normal login form.
+4. Open the Mini App from Telegram. The first launch authenticates the user.
+
+### Account linking
+
+On Telegram login, the backend resolves the user in this order:
+
+1. **Already linked** by `telegram_id` → sign in (the returning-user case).
+2. **Match by username** → if a local account has the same username
+   (case-insensitive), link the `telegram_id` to it and sign in. This lets an
+   admin pre-provision accounts that clients then reach via Telegram.
+3. **Auto-create** → otherwise create a new passwordless client account keyed
+   by `telegram_id`.
+
+### Instance-creation privilege
+
+By default **no account can launch instances** — not browser users, not Telegram
+users. Only `admin` accounts always pass. The privilege is controlled by the
+per-user `can_create_instances` flag and managed from **Admin → Clients**:
+
+- **Per user**: *Edit* a client and toggle **Can create instances**.
+- **In bulk**: *Grant Access* → paste a list of usernames (comma- or
+  newline-separated) → choose *Allow* / *Revoke* → *Apply*. The result reports
+  how many were updated and which usernames were not found.
+
+A user without the privilege sees the *Launch New Call* card disabled with a
+notice; the API also enforces the rule (`POST /api/client/start` → `403`).
+
+> **Upgrading from an older version:** the one-time migration backfills
+> `can_create_instances = 1` for **all existing users**, so no current client
+> loses the ability to launch. New users created after the upgrade start
+> disabled, as described above.
 
 ---
 
@@ -200,9 +256,10 @@ process_manager.py   ★ spawn / track / reap / kill / timeout  (the core)
 services.py          business logic + the Remnawave extensibility seam
 routers/
   auth.py            login / logout / me
+  telegram.py        Telegram Mini App auth (initData validation)
   admin.py           CRUD clients + services + live overview
   client.py          utilization / list / start / stop
-static/index.html    single-page dark UI
+static/index.html    single-page dark UI (also serves as the TMA)
 ```
 
 ### How the Process Manager prevents zombies & leaks
@@ -264,11 +321,14 @@ webhook deliveries.
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/api/auth/login` | — | Get bearer token |
+| POST | `/api/auth/login` | — | Get bearer token (username/password) |
+| POST | `/api/auth/telegram` | — | Get bearer token via Telegram `initData` (404 if disabled) |
 | POST | `/api/auth/logout` | any | Revoke token |
 | GET  | `/api/auth/me` | any | Current user |
 | GET  | `/api/admin/clients` | admin | List clients |
 | POST | `/api/admin/clients` | admin | Create client |
+| POST | `/api/admin/clients/bulk` | admin | Bulk-create clients by username list |
+| POST | `/api/admin/clients/can-create` | admin | Bulk grant/revoke instance-creation privilege |
 | PATCH| `/api/admin/clients/{id}` | admin | Update client |
 | DELETE | `/api/admin/clients/{id}` | admin | Delete client (+ stop instances) |
 | GET/POST/PATCH/DELETE | `/api/admin/services[/{id}]` | admin | Manage services |
@@ -276,7 +336,7 @@ webhook deliveries.
 | GET  | `/api/client/services` | client | Available services |
 | GET  | `/api/client/utilization` | client | Slot usage (`{active, max, remaining}`) |
 | GET  | `/api/client/instances` | client | Own active instances |
-| POST | `/api/client/start` | client | Start a call (409 if at cap) |
+| POST | `/api/client/start` | client | Start a call (403 if creation disabled, 409 if at cap) |
 | POST | `/api/client/stop/{id}` | client | Stop own instance |
 | GET  | `/api/health` | — | Liveness + live process count |
 

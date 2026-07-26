@@ -27,8 +27,19 @@ CREATE TABLE IF NOT EXISTS users (
     external_ref  TEXT UNIQUE,
     created_at    TEXT NOT NULL DEFAULT (datetime('now')),
     enabled       INTEGER NOT NULL DEFAULT 1,
-    password_must_change INTEGER NOT NULL DEFAULT 0
+    password_must_change INTEGER NOT NULL DEFAULT 0,
+    -- Telegram WebApp linkage; NULL means the account is not linked to Telegram.
+    telegram_id          INTEGER,
+    -- Instance-creation privilege. Defaults to 0 (OFF): new users — including
+    -- those auto-created via Telegram — cannot launch instances until an admin
+    -- grants it. Existing users are backfilled to 1 once on upgrade (see the
+    -- migration in Database.connect) so no current client loses a capability.
+    can_create_instances INTEGER NOT NULL DEFAULT 0
 );
+-- NOTE: the unique index on telegram_id is created in Database.connect()
+-- (after the migration that adds the column), NOT here, because executescript
+-- runs the whole SCHEMA_SQL as one batch before any ALTER TABLE — so on an
+-- upgrade the index would reference a column that does not yet exist.
 
 -- Pre-configured services the binary can connect to (Service A, Service B, ...)
 CREATE TABLE IF NOT EXISTS services (
@@ -116,6 +127,27 @@ class Database:
         user_columns = [row[1] for row in rows]
         if "password_must_change" not in user_columns:
             await self._conn.execute("ALTER TABLE users ADD COLUMN password_must_change INTEGER NOT NULL DEFAULT 0")
+
+        # Migration: add Telegram linkage + instance-creation privilege.
+        # telegram_id is nullable; can_create_instances defaults to 0 so all
+        # newly created users (incl. auto-created via Telegram) start OFF.
+        # When can_create_instances is first added, we backfill every existing
+        # user to 1 (inside this guard) so the upgrade preserves current
+        # behavior — no existing client loses the ability to launch instances.
+        if "telegram_id" not in user_columns:
+            await self._conn.execute("ALTER TABLE users ADD COLUMN telegram_id INTEGER")
+        if "can_create_instances" not in user_columns:
+            await self._conn.execute(
+                "ALTER TABLE users ADD COLUMN can_create_instances INTEGER NOT NULL DEFAULT 0"
+            )
+            await self._conn.execute("UPDATE users SET can_create_instances = 1")
+            log.warning("Backfilled can_create_instances=1 for existing users (one-time)")
+        # Partial unique index on telegram_id (re-runnable). Created here (and
+        # in SCHEMA_SQL for fresh installs) so upgrades get it too.
+        await self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_id "
+            "ON users(telegram_id) WHERE telegram_id IS NOT NULL"
+        )
 
         # Migration: change instances.service_id FK from RESTRICT to CASCADE.
         # SQLite cannot ALTER constraints, so we check the sql schema and

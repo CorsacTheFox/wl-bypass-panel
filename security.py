@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qsl
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -20,6 +22,10 @@ bearer_scheme = HTTPBearer(auto_error=False)
 
 SALT_BYTES = 16
 TOKEN_BYTES = 32
+
+
+class TelegramAuthError(Exception):
+    """Raised when a Telegram WebApp initData string fails validation."""
 
 
 # --------------------------------------------------------------------------- #
@@ -69,7 +75,7 @@ async def get_user_by_token(token: str) -> dict | None:
     row = await db.fetchone(
         """
         SELECT u.id, u.username, u.role, u.max_concurrent, u.enabled,
-               u.password_must_change, s.expires_at
+               u.password_must_change, u.can_create_instances, s.expires_at
         FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token = ?
         """,
@@ -94,7 +100,78 @@ async def get_user_by_token(token: str) -> dict | None:
         "role": row["role"],
         "max_concurrent": row["max_concurrent"],
         "must_change_password": bool(row["password_must_change"]),
+        "can_create_instances": bool(row["can_create_instances"]),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Telegram WebApp initData validation
+# --------------------------------------------------------------------------- #
+def validate_telegram_init_data(init_data: str, bot_token: str, max_age: int) -> dict:
+    """Validate a Telegram Mini App ``initData`` string and return the user.
+
+    Implements the official validation algorithm
+    (https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app):
+
+      1. parse ``init_data`` as form-urlencoded fields;
+      2. pop ``hash`` (the HMAC we recompute);
+      3. reject if ``auth_date`` is missing or older than ``max_age`` seconds
+         (replay guard);
+      4. build the data-check-string by sorting ``key=value`` pairs (values
+         URL-decoded) alphabetically and joining with newlines;
+      5. ``secret_key = HMAC_SHA256(b"WebAppData", bot_token)``;
+      6. ``expected   = HMAC_SHA256(secret_key, data_check_string).hexdigest()``;
+      7. constant-time compare expected vs the received ``hash``;
+      8. parse the JSON ``user`` field and return it.
+
+    Raises :class:`TelegramAuthError` on any failure. Uses only the standard
+    library (hmac/hashlib/urllib) — no new dependency.
+    """
+    if not init_data or not bot_token:
+        raise TelegramAuthError("missing initData or bot token")
+
+    # parse_qsl decodes URL-encoded values and keeps the last value on dup keys.
+    fields = dict(parse_qsl(init_data, keep_blank_values=True))
+    received_hash = fields.pop("hash", None)
+    if not received_hash:
+        raise TelegramAuthError("initData missing hash")
+
+    # --- replay guard on auth_date ---
+    auth_date_raw = fields.get("auth_date")
+    if not auth_date_raw:
+        raise TelegramAuthError("initData missing auth_date")
+    try:
+        auth_date = int(auth_date_raw)
+    except (TypeError, ValueError):
+        raise TelegramAuthError("initData auth_date is not an integer")
+    age = datetime.now(timezone.utc).timestamp() - auth_date
+    if age < 0:
+        raise TelegramAuthError("initData auth_date is in the future")
+    if age > max_age:
+        raise TelegramAuthError("initData expired")
+
+    # --- build data-check-string (values must be URL-decoded) ---
+    data_check_string = "\n".join(
+        f"{k}={v}" for k, v in sorted(fields.items())
+    )
+
+    # --- recompute the hash and compare ---
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    expected = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, received_hash):
+        raise TelegramAuthError("initData hash mismatch")
+
+    # --- extract the Telegram user object ---
+    user_raw = fields.get("user")
+    if not user_raw:
+        raise TelegramAuthError("initData missing user")
+    try:
+        tg_user = json.loads(user_raw)
+    except json.JSONDecodeError:
+        raise TelegramAuthError("initData user is not valid JSON")
+    if not isinstance(tg_user, dict) or "id" not in tg_user:
+        raise TelegramAuthError("initData user has no id")
+    return tg_user
 
 
 # --------------------------------------------------------------------------- #

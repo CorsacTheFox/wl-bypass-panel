@@ -34,10 +34,17 @@ class BulkCreateIn(BaseModel):
     max_concurrent: int = Field(default=DEFAULT_MAX_CONCURRENT, ge=0, le=10)
 
 
+class CanCreateBulkIn(BaseModel):
+    """Grant or revoke instance-creation privilege for many users by username."""
+    usernames: str  # comma- or newline-separated list
+    value: bool
+
+
 class ClientUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=6, max_length=128)
     max_concurrent: int | None = Field(default=None, ge=0, le=10)
     enabled: bool | None = None
+    can_create_instances: bool | None = None
 
 
 @router.get("/clients")
@@ -64,6 +71,19 @@ async def create_clients_bulk(body: BulkCreateIn):
     return result
 
 
+@router.post("/clients/can-create")
+async def set_can_create_bulk(body: CanCreateBulkIn):
+    """Bulk grant or revoke instance-creation privilege by username.
+
+    Accepts comma- or newline-separated usernames. Returns the lists of
+    usernames that were updated and usernames that could not be found.
+    """
+    names = [u.strip() for u in body.usernames.replace("\n", ",").split(",") if u.strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="no usernames provided")
+    return await user_service.set_can_create_bulk(names, body.value)
+
+
 @router.patch("/clients/{client_id}")
 async def update_client(client_id: int, body: ClientUpdate):
     try:
@@ -72,6 +92,7 @@ async def update_client(client_id: int, body: ClientUpdate):
             password=body.password,
             max_concurrent=body.max_concurrent,
             enabled=body.enabled,
+            can_create_instances=body.can_create_instances,
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="client not found")
