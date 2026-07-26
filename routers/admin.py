@@ -14,6 +14,7 @@ from services import (
     cookies_store,
     instance_service,
     service_registry,
+    settings_store,
     user_service,
 )
 
@@ -45,6 +46,7 @@ class ClientUpdate(BaseModel):
     max_concurrent: int | None = Field(default=None, ge=0, le=10)
     enabled: bool | None = None
     can_create_instances: bool | None = None
+    role: str | None = Field(default=None, pattern="^(admin|client)$")
 
 
 @router.get("/clients")
@@ -87,6 +89,9 @@ async def set_can_create_bulk(body: CanCreateBulkIn):
 @router.patch("/clients/{client_id}")
 async def update_client(client_id: int, body: ClientUpdate):
     try:
+        # Role change is a dedicated path with last-admin protection.
+        if body.role is not None:
+            await user_service.set_role(client_id, body.role)
         return await user_service.update(
             client_id,
             password=body.password,
@@ -96,6 +101,8 @@ async def update_client(client_id: int, body: ClientUpdate):
         )
     except NotFoundError:
         raise HTTPException(status_code=404, detail="client not found")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
 
 @router.delete("/clients/{client_id}")
@@ -106,6 +113,8 @@ async def delete_client(client_id: int):
         await user_service.delete(client_id)
     except NotFoundError:
         raise HTTPException(status_code=404, detail="client not found")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return {"ok": True}
 
 
@@ -294,3 +303,25 @@ async def overview():
             ORDER BY i.started_at DESC"""
     )
     return {"live": [dict(r) for r in rows], "count": len(rows)}
+
+
+# --------------------------------------------------------------------------- #
+# Settings (runtime overrides for the quick-launch flow)
+# --------------------------------------------------------------------------- #
+class SettingsUpdate(BaseModel):
+    quick_service_id: int | None = Field(default=None, ge=0)
+    quick_max_concurrent: int | None = Field(default=None, ge=0, le=100)
+
+
+@router.get("/settings")
+async def get_settings():
+    """Current runtime settings (DB override or config fallback)."""
+    return await settings_store.get_all()
+
+
+@router.put("/settings")
+async def put_settings(body: SettingsUpdate):
+    data = body.model_dump(exclude_none=True)
+    for key, value in data.items():
+        await settings_store.set(key, value)
+    return await settings_store.get_all()

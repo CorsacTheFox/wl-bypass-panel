@@ -386,6 +386,35 @@
       </div>
     </section>
 
+    <!-- ====== SETTINGS SECTION (admin) ====== -->
+    <section id="sec-settings" class="hidden anim-fade space-y-5">
+      <div class="card p-6 max-w-xl">
+        <h2 class="text-white font-semibold text-sm mb-1">Quick-Launch Settings</h2>
+        <p class="text-xs text-gray-500 mb-5">
+          Controls the public <code class="text-violet-400">/quick</code> one-click flow.
+          The selected service and the concurrency cap are applied at runtime — no restart needed.
+        </p>
+        <form id="form-settings" class="space-y-4">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service for quick launch</label>
+            <select id="set-quick-service" class="input-field">
+              <option value="0">— first enabled service —</option>
+            </select>
+            <p class="text-[10px] text-gray-600 mt-1">The service launched by the public /quick page.</p>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max simultaneous quick sessions</label>
+            <input id="set-quick-max" type="number" min="0" max="100" class="input-field" value="5" required />
+            <p class="text-[10px] text-gray-600 mt-1">Global cap across all anonymous quick callers. 0 disables quick launch.</p>
+          </div>
+          <div class="flex gap-3 pt-1">
+            <button type="submit" class="btn btn-primary px-5">Save Settings</button>
+            <button type="button" id="btn-settings-reset" class="btn btn-ghost">Reload</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -486,6 +515,34 @@ function fmtTime(s) {
 
 function isTerminal(status) {
   return ['stopped','exited','crashed','timeout'].includes(status);
+}
+
+/* --- Copy to clipboard (works inside Telegram WebView + regular browsers) --- */
+async function copyText(text) {
+  // 1. Telegram Mini App native API (preferred inside TG WebView).
+  const tg = window.Telegram?.WebApp;
+  if (tg?.copyTextToClipboard) {
+    return new Promise((resolve) => tg.copyTextToClipboard(text, (ok) => resolve(ok)));
+  }
+  // 2. Async Clipboard API (HTTPS browsers).
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch { /* fall through to legacy */ }
+  // 3. Legacy execCommand fallback (non-secure contexts / older WebViews).
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
 }
 
 /* =========================================================================
@@ -638,6 +695,14 @@ function buildNav() {
       onClick: () => switchTab('admin'),
     });
     nav.appendChild(adminTab);
+
+    const settingsTab = el('button', {
+      class: 'btn btn-ghost text-xs py-1.5 px-3 border-b-2 transition-colors',
+      text: 'Settings',
+      'data-tab': 'settings',
+      onClick: () => switchTab('settings'),
+    });
+    nav.appendChild(settingsTab);
   }
 }
 
@@ -645,6 +710,7 @@ function switchTab(tab) {
   currentTab = tab;
   $('#sec-dashboard').classList.toggle('hidden', tab !== 'dashboard');
   $('#sec-admin').classList.toggle('hidden', tab !== 'admin');
+  $('#sec-settings').classList.toggle('hidden', tab !== 'settings');
 
   // Highlight active tab
   $$('[data-tab]').forEach(b => {
@@ -659,7 +725,46 @@ function switchTab(tab) {
 
   if (tab === 'dashboard') refreshDashboard();
   if (tab === 'admin') refreshAdmin();
+  if (tab === 'settings') refreshSettings();
 }
+
+/* =========================================================================
+   SETTINGS (admin)
+   ========================================================================= */
+async function refreshSettings() {
+  try {
+    const [settings, services] = await Promise.all([
+      api.get('/api/admin/settings'),
+      api.get('/api/admin/services'),
+    ]);
+    const sel = $('#set-quick-service');
+    sel.innerHTML = '<option value="0">— first enabled service —</option>' +
+      services.map(s =>
+        `<option value="${s.id}" ${s.enabled ? '' : 'disabled'}>${s.name}${s.enabled ? '' : ' (disabled)'}</option>`
+      ).join('');
+    sel.value = String(settings.quick_service_id || 0);
+    $('#set-quick-max').value = settings.quick_max_concurrent;
+  } catch (err) {
+    if (err.message !== 'Session expired') console.error('Settings refresh error:', err);
+  }
+}
+
+$('#form-settings').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('[type="submit"]');
+  btn.disabled = true;
+  try {
+    await api.request('/api/admin/settings', { method: 'PUT', body: {
+      quick_service_id: parseInt($('#set-quick-service').value) || 0,
+      quick_max_concurrent: parseInt($('#set-quick-max').value) || 0,
+    }});
+    toast('Settings saved');
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally { btn.disabled = false; }
+});
+
+$('#btn-settings-reset').addEventListener('click', refreshSettings);
 
 /* =========================================================================
    DASHBOARD
@@ -809,10 +914,8 @@ document.addEventListener('click', async (e) => {
   const copyBtn = e.target.closest('[data-action="copy-link"]');
   if (copyBtn) {
     const link = copyBtn.dataset.link;
-    try {
-      await navigator.clipboard.writeText(link);
-      toast('Link copied to clipboard');
-    } catch { toast('Copy failed', 'err'); }
+    const ok = await copyText(link);
+    toast(ok ? 'Link copied to clipboard' : 'Copy failed', ok ? 'ok' : 'err');
     return;
   }
   // Stop instance
@@ -847,7 +950,10 @@ async function refreshAdmin() {
     $('#tbody-clients').innerHTML = clients.map(c => `
       <tr class="tbl-row">
         <td class="px-5 py-3">
-          <div class="text-white font-medium">${esc(c.username)}</div>
+          <div class="text-white font-medium flex items-center gap-2">
+            ${esc(c.username)}
+            ${c.role === 'admin' ? '<span class="badge" style="color:#a78bfa;background:rgba(167,139,250,0.12)">admin</span>' : ''}
+          </div>
         </td>
         <td class="px-5 py-3 text-gray-400">${c.max_concurrent}</td>
         <td class="px-5 py-3 text-gray-400">${c.active ?? 0}</td>
@@ -866,7 +972,7 @@ async function refreshAdmin() {
         <td class="px-5 py-3 text-right space-x-2">
           <button class="btn btn-ghost text-xs py-1 px-2.5" data-action="edit-client" data-id="${c.id}"
             data-username="${esc(c.username)}" data-max="${c.max_concurrent}" data-enabled="${c.enabled}"
-            data-cancreate="${c.can_create_instances ? 1 : 0}">Edit</button>
+            data-role="${c.role}" data-cancreate="${c.can_create_instances ? 1 : 0}">Edit</button>
           <button class="btn btn-danger text-xs py-1 px-2.5" data-action="del-client" data-id="${c.id}">Del</button>
         </td>
       </tr>`).join('');
@@ -930,6 +1036,7 @@ document.addEventListener('click', async (e) => {
       username: btn.dataset.username,
       max_concurrent: +btn.dataset.max,
       enabled: btn.dataset.enabled === 'true',
+      role: btn.dataset.role || 'client',
       can_create_instances: btn.dataset.cancreate === '1',
     });
   }
@@ -1164,6 +1271,14 @@ function openClientModal(c = {}) {
         <input id="mf-max" type="number" min="0" max="10" class="input-field" value="${c.max_concurrent ?? 3}" required />
       </div>
       ${isEdit ? `
+      <div>
+        <label class="block text-xs text-gray-500 mb-1.5 font-medium">Role</label>
+        <select id="mf-role" class="input-field">
+          <option value="client" ${c.role !== 'admin' ? 'selected' : ''}>Client</option>
+          <option value="admin" ${c.role === 'admin' ? 'selected' : ''}>Administrator</option>
+        </select>
+        <p class="text-[10px] text-gray-600 mt-1">Administrators can manage clients, services and settings. The last admin cannot be demoted.</p>
+      </div>
       <label class="flex items-center gap-2.5 cursor-pointer">
         <input id="mf-enabled" type="checkbox" ${c.enabled ? 'checked' : ''} class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
         <span class="text-sm text-gray-300">Enabled</span>
@@ -1203,6 +1318,7 @@ function openClientModal(c = {}) {
       if (isEdit) {
         payload.enabled = $('#mf-enabled').checked;
         payload.can_create_instances = $('#mf-cancreate').checked;
+        payload.role = $('#mf-role').value;
         await api.patch('/api/admin/clients/' + c.id, payload);
         toast('Client updated');
       } else {

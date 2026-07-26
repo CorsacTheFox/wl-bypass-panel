@@ -44,6 +44,11 @@ PBKDF2_ITERATIONS = 200_000
 # Quick-launch page: token to authorize unauthenticated instance creation.
 # When empty (default), the /quick route is disabled.
 QUICK_TOKEN = os.getenv("WB_QUICK_TOKEN", "")
+# Maximum number of simultaneous quick-launch instances (across all callers).
+QUICK_MAX_CONCURRENT = int(os.getenv("WB_QUICK_MAX_CONCURRENT", "5"))
+# Default service id used by the public /quick flow when no admin override is
+# set. 0 = use the first enabled service.
+QUICK_DEFAULT_SERVICE_ID = int(os.getenv("WB_QUICK_DEFAULT_SERVICE_ID", "0"))
 
 # Telegram Mini App (WebApp) authorization.
 # Set to the bot token obtained from BotFather to enable Telegram login.

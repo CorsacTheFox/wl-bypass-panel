@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS instances (
     timeout_at   TEXT,                          -- absolute datetime the instance should be killed
     error        TEXT,
     output_link  TEXT,                          -- join_link extracted from binary stdout (e.g. wbstream://...)
+    is_quick     INTEGER NOT NULL DEFAULT 0,    -- 1 if created via the public /quick flow
     FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
     FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
 );
@@ -89,6 +90,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- Runtime settings (key/value). Overrides config defaults; managed from the
+-- Admin panel. Rows are simple "key = TEXT value" pairs.
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 # Safe migration: add output_link column to an existing instances table that
@@ -122,6 +130,8 @@ class Database:
         columns = [row[1] for row in rows]
         if "output_link" not in columns:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN output_link TEXT")
+        if "is_quick" not in columns:
+            await self._conn.execute("ALTER TABLE instances ADD COLUMN is_quick INTEGER NOT NULL DEFAULT 0")
         # Migration: add password_must_change column if missing.
         rows = await self._conn.execute_fetchall("PRAGMA table_info(users)")
         user_columns = [row[1] for row in rows]

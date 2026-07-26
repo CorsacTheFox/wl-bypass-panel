@@ -178,7 +178,33 @@ class UserService:
 
     async def delete(self, user_id: int) -> None:
         # Stopping their live instances first is the caller's responsibility.
-        await db.execute("DELETE FROM users WHERE id=? AND role='client'", (user_id,))
+        # Never allow deleting the last remaining admin (would lock everyone out).
+        target = await self.get(user_id)
+        if target["role"] == "admin" and await self.admin_count() <= 1:
+            raise ValueError("cannot delete the last administrator")
+        await db.execute("DELETE FROM users WHERE id=?", (user_id,))
+
+    async def admin_count(self) -> int:
+        row = await db.fetchone("SELECT COUNT(*) c FROM users WHERE role='admin'")
+        return row["c"] if row else 0
+
+    async def set_role(self, user_id: int, role: str) -> dict:
+        """Promote/demote a user. role must be 'admin' or 'client'.
+
+        Demoting the last admin is refused. Promoting to admin also grants
+        can_create_instances (admins always pass the privilege gate anyway).
+        """
+        if role not in ("admin", "client"):
+            raise ValueError("role must be 'admin' or 'client'")
+        target = await self.get(user_id)
+        if target["role"] != role:
+            if target["role"] == "admin" and role == "client" and await self.admin_count() <= 1:
+                raise ValueError("cannot demote the last administrator")
+            extra = ", can_create_instances=1" if role == "admin" else ""
+            await db.execute(
+                f"UPDATE users SET role=?{extra} WHERE id=?", (role, user_id)
+            )
+        return await self.get(user_id)
 
     async def change_password(self, user_id: int, new_password: str) -> dict:
         """Set a new password and clear the must_change flag."""
@@ -584,6 +610,69 @@ binaries_store = BinariesStore()
 
 
 # --------------------------------------------------------------------------- #
+# Runtime settings (admin-managed, overrides config defaults)
+# --------------------------------------------------------------------------- #
+# Each setting has: a DB key (runtime value, may be absent), a config fallback,
+# and a parser. get() returns the parsed runtime value, or the fallback when
+# no row exists (or the row is empty).
+class SettingsStore:
+    # key -> (config fallback, parser)
+    _DEFAULTS = {
+        # service id used by the public /quick flow; 0/None = first enabled.
+        "quick_service_id": ("WB_QUICK_DEFAULT_SERVICE_ID", int),
+        # global cap on simultaneous quick sessions.
+        "quick_max_concurrent": ("WB_QUICK_MAX_CONCURRENT", int),
+    }
+
+    async def get_all(self) -> dict:
+        rows = await db.fetchall("SELECT key, value FROM settings")
+        stored = {r["key"]: r["value"] for r in rows}
+        out = {}
+        for key, (env_name, parser) in self._DEFAULTS.items():
+            raw = stored.get(key)
+            out[key] = self._parse_or_fallback(raw, env_name, parser, key)
+        return out
+
+    async def get(self, key: str):
+        spec = self._DEFAULTS.get(key)
+        if spec is None:
+            raise KeyError(f"unknown setting: {key}")
+        env_name, parser = spec
+        row = await db.fetchone("SELECT value FROM settings WHERE key=?", (key,))
+        return self._parse_or_fallback(row["value"] if row else None, env_name, parser, key)
+
+    async def set(self, key: str, value) -> None:
+        if key not in self._DEFAULTS:
+            raise KeyError(f"unknown setting: {key}")
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (key, str(value)),
+        )
+
+    def _parse_or_fallback(self, raw, env_name, parser, key):
+        import os
+        if raw is None or raw == "":
+            env_val = os.getenv(env_name, "")
+            if env_val == "":
+                # per-key built-in defaults
+                if key == "quick_service_id":
+                    return 0
+                if key == "quick_max_concurrent":
+                    return 5
+                return None
+            raw = env_val
+        try:
+            return parser(raw)
+        except (TypeError, ValueError):
+            # last resort: built-in default
+            return 0 if key == "quick_service_id" else 5
+
+
+settings_store = SettingsStore()
+
+
+# --------------------------------------------------------------------------- #
 # Instances — enforces the max-3 concurrency rule
 # --------------------------------------------------------------------------- #
 class InstanceService:
@@ -619,7 +708,8 @@ class InstanceService:
         }
 
     async def start(self, user_id: int, service_id: int,
-                    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS) -> dict:
+                    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+                    is_quick: bool = False) -> dict:
         # 1. concurrency check (the core business rule)
         user = await user_service.get(user_id)
         active = await self._active_count(user_id)
@@ -642,9 +732,9 @@ class InstanceService:
             datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
         ).isoformat()
         cur = await db.execute(
-            """INSERT INTO instances (user_id, service_id, status, timeout_at)
-               VALUES (?, ?, 'pending', ?)""",
-            (user_id, service_id, timeout_at),
+            """INSERT INTO instances (user_id, service_id, status, timeout_at, is_quick)
+               VALUES (?, ?, 'pending', ?, ?)""",
+            (user_id, service_id, timeout_at, 1 if is_quick else 0),
         )
         instance_id = cur.lastrowid
 
