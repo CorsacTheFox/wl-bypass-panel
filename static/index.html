@@ -1506,12 +1506,19 @@ async function openServiceModal(s = {}) {
       const r = await api.post('/api/auth/telegram', { initData: window.Telegram.WebApp.initData });
       api.token = r.token;
       localStorage.setItem(TOKEN_KEY, r.token);
-      toast('Signed in as ' + r.username + ' (Telegram)');
-      await bootstrap();
+      try {
+        await bootstrap();
+        toast('Signed in as ' + r.username + ' (Telegram)');
+      } catch (bootErr) {
+        // Auth succeeded but the app failed to bootstrap — fall back to login.
+        console.error('Bootstrap after Telegram auth failed:', bootErr);
+        api.logout();
+      }
       return;
     } catch (err) {
-      // Surface the error but keep going to the login screen.
+      // Auth itself failed — show why and keep going to the login screen.
       console.warn('Telegram auth failed:', err.message);
+      toast('Telegram auth failed: ' + err.message, 'err');
     }
   }
 

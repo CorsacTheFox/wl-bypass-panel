@@ -75,7 +75,8 @@ async def get_user_by_token(token: str) -> dict | None:
     row = await db.fetchone(
         """
         SELECT u.id, u.username, u.role, u.max_concurrent, u.enabled,
-               u.password_must_change, u.can_create_instances, s.expires_at
+               u.password_must_change, u.can_create_instances, u.telegram_id,
+               s.expires_at
         FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.token = ?
         """,
@@ -94,12 +95,15 @@ async def get_user_by_token(token: str) -> dict | None:
         return None
     if not row["enabled"]:
         return None
+    # A Telegram-linked account authenticates cryptographically via initData, so
+    # it never needs to set/change a password through the web flow.
+    is_tg = row["telegram_id"] is not None
     return {
         "id": row["id"],
         "username": row["username"],
         "role": row["role"],
         "max_concurrent": row["max_concurrent"],
-        "must_change_password": bool(row["password_must_change"]),
+        "must_change_password": False if is_tg else bool(row["password_must_change"]),
         "can_create_instances": bool(row["can_create_instances"]),
     }
 
