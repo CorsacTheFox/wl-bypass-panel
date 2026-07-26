@@ -92,16 +92,80 @@ async def health():
     return {"ok": True, "live_processes": process_manager.live_count()}
 
 
-# Quick-launch: NON-INTERACTIVE. A GET /quick (or /api/quick/link) starts an
-# instance and returns the ready join link as plain text — no page, no JS, no
-# JSON. Intended for bots / external integrations that just want the link.
-from fastapi.responses import PlainTextResponse  # noqa: E402
+# Quick-launch page: NON-INTERACTIVE. GET /quick starts an instance, waits for
+# the join link, and renders a styled HTML page showing it (server-side, no JS).
+# The raw plain-text link is available at /api/quick/link for bots/integrations.
+from fastapi import HTTPException  # noqa: E402
+from fastapi.responses import HTMLResponse, PlainTextResponse  # noqa: E402
 from routers.quick import produce_link  # noqa: E402
 
 
-@app.get("/quick", response_class=PlainTextResponse)
+def _escape(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _quick_html_page(link: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Quick Launch</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *,*::before,*::after{{box-sizing:border-box;}}
+    body{{font-family:'Inter',system-ui,-apple-system,sans-serif;margin:0;
+          background:#08080a;color:#d1d5db;min-height:100vh;
+          display:flex;align-items:center;justify-content:center;padding:1rem;}}
+    .wrap{{width:100%;max-width:28rem;}}
+    .card{{background:#14141a;border:1px solid rgba(255,255,255,0.06);
+           border-radius:16px;padding:2rem;text-align:center;}}
+    .logo{{width:3rem;height:3rem;border-radius:12px;background:#7c3aed;
+           display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;
+           box-shadow:0 8px 24px rgba(124,58,237,0.25);}}
+    h1{{color:#fff;font-size:1.25rem;font-weight:600;margin:0 0 .5rem;}}
+    .sub{{color:#6b7280;font-size:.8rem;margin:0 0 1.5rem;}}
+    .link-box{{background:#0e0e12;border:1px solid rgba(255,255,255,0.08);
+               border-radius:10px;padding:.85rem 1rem;margin:0 0 1.25rem;
+               word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+               font-size:.8rem;color:#67e8f9;}}
+    .btn{{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;
+          padding:.7rem 1.5rem;border-radius:10px;font-size:.85rem;font-weight:500;
+          cursor:pointer;border:none;outline:none;text-decoration:none;}}
+    .btn-success{{background:#16a34a;color:#fff;}}
+    .btn-success:hover{{background:#15803d;}}
+    .hint{{color:#4b5563;font-size:.7rem;margin:1.25rem 0 0;}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+      </div>
+      <h1>Instance ready</h1>
+      <p class="sub">Your link is below — tap to copy it.</p>
+      <div class="link-box">{_escape(link)}</div>
+      <a class="btn btn-success" href="{_escape(link)}">Open Link</a>
+      <p class="hint">15-minute session &middot; auto-created</p>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+@app.get("/quick")
 async def quick_page():
-    return PlainTextResponse(await produce_link())
+    """Styled non-interactive page showing the ready link (server-rendered)."""
+    try:
+        link = await produce_link()
+    except HTTPException:
+        raise
+    return HTMLResponse(_quick_html_page(link))
 
 
 # SPA fallback: any non-API, non-static GET -> index.html
