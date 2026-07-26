@@ -92,15 +92,16 @@ async def health():
     return {"ok": True, "live_processes": process_manager.live_count()}
 
 
-# Quick-launch page (static HTML, token is passed via query param by the user)
-QUICK_HTML = BASE_DIR / "quick.html"
+# Quick-launch: NON-INTERACTIVE. A GET /quick (or /api/quick/link) starts an
+# instance and returns the ready join link as plain text — no page, no JS, no
+# JSON. Intended for bots / external integrations that just want the link.
+from fastapi.responses import PlainTextResponse  # noqa: E402
+from routers.quick import produce_link  # noqa: E402
 
 
-@app.get("/quick")
+@app.get("/quick", response_class=PlainTextResponse)
 async def quick_page():
-    if QUICK_HTML.exists():
-        return FileResponse(QUICK_HTML)
-    return {"detail": "quick.html not found"}
+    return PlainTextResponse(await produce_link())
 
 
 # SPA fallback: any non-API, non-static GET -> index.html
