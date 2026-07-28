@@ -86,6 +86,74 @@ class TrackedProcess:
         return self.proc.returncode is None
 
 
+class _UnownedProc:
+    """Minimal stand-in for ``asyncio.subprocess.Process`` wrapping a PID we
+    did *not* spawn in this process (e.g. an orphaned binary re-adopted after
+    a ``systemctl restart``).
+
+    Because the process is not our child, we cannot ``waitpid`` it directly
+    (the OS would return ECHILD — init already reaped it). So ``wait()``
+    polls ``os.kill(pid, 0)`` until the process disappears. This is cheap and
+    portable (no /proc dependency). The signal helpers forward to the OS so
+    ``_kill``'s existing process-group logic keeps working.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+
+    async def wait(self) -> int:
+        while True:
+            if not _pid_alive(self.pid):
+                self.returncode = 0  # unknown real code; treated as gone
+                return 0
+            await asyncio.sleep(1.0)
+
+    def send_signal(self, sig: int) -> None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(self.pid, sig)
+
+    def kill(self) -> None:
+        self.send_signal(signal.SIGKILL)
+
+
+def _pid_alive(pid: int | None) -> bool:
+    """True if a process with *pid* currently exists.
+
+    ``os.kill(pid, 0)`` sends no signal — it only checks existence.
+    ``ProcessLookupError`` means the PID is gone; ``PermissionError`` means
+    it exists but is owned by another uid (still alive).
+    """
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _remaining_seconds(timeout_at: str | None) -> float | None:
+    """Seconds from now until the *timeout_at* deadline, or None if there is
+    no deadline. Accepts both ISO-with-offset (``datetime.isoformat()``) and
+    naive SQLite-style ``YYYY-MM-DD HH:MM:SS`` (treated as UTC). May be <= 0
+    if the deadline is already in the past.
+    """
+    if not timeout_at:
+        return None
+    try:
+        # datetime.fromisoformat handles offsets on 3.11+, and also the
+        # space-separated form. Fall back to treating naive values as UTC.
+        dt = datetime.fromisoformat(timeout_at)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (dt - datetime.now(timezone.utc)).total_seconds()
+
+
 class ProcessManager:
     """Singleton manager. Lives for the whole process lifetime."""
 
@@ -211,6 +279,63 @@ class ProcessManager:
         tracked.tailer = asyncio.create_task(self._tailer(tracked))
         return proc.pid
 
+    async def reattach(
+        self,
+        instance_id: int,
+        pid: int,
+        timeout_at: str | None = None,
+        has_output_link: bool = False,
+    ) -> bool:
+        """Re-adopt an *already-running* binary we did not spawn in this
+        process — e.g. an orphan left alive by a ``systemctl restart``.
+
+        Wraps *pid* back into a :class:`TrackedProcess` and restarts the
+        waiter (so the row is still finalized when the binary eventually
+        exits), the tailer (only if no ``output_link`` is known yet), and
+        re-arms the timeout from the stored *timeout_at* deadline.
+
+        Returns True if the process was alive and re-adopted, False if it had
+        already exited (caller should mark it crashed).
+        """
+        if not _pid_alive(pid):
+            return False
+
+        proc = _UnownedProc(pid)
+        log_path = LOGS_DIR / f"instance-{instance_id}.log"
+
+        tracked = TrackedProcess(instance_id, proc, log_path=log_path)  # type: ignore[arg-type]
+        async with self._lock:
+            # Drop any stale in-memory tracking for this id (defensive).
+            old = self._tracked.pop(instance_id, None)
+            self._tracked[instance_id] = tracked
+        if old is not None:
+            for t in (old.tailer, old.waiter, old.kill_task):
+                if t and not t.done():
+                    t.cancel()
+
+        # Waiter: finalize the row when the binary eventually exits.
+        tracked.waiter = asyncio.create_task(self._waiter(tracked))
+
+        # Tailer: only needed if we haven't captured a join_link yet. Resume
+        # from current EOF so we only scan lines appended after re-adoption.
+        if not has_output_link and log_path.exists():
+            start_pos = log_path.stat().st_size
+            tracked.tailer = asyncio.create_task(self._tailer(tracked, start_pos=start_pos))
+
+        # Re-arm the timeout from the stored absolute deadline.
+        delay = _remaining_seconds(timeout_at)
+        if delay is not None:
+            if delay <= 0:
+                log.warning("Instance %d deadline already passed at startup; killing", instance_id)
+                # Run asynchronously — don't block reattach of sibling rows.
+                asyncio.create_task(self._kill(instance_id, reason="timeout", timeout_status=True))
+            else:
+                await self.schedule_timeout(instance_id, delay)
+
+        log.info("Re-adopted instance %d -> pid %d (timeout in %.0fs)",
+                 instance_id, pid, delay if delay is not None else -1)
+        return True
+
     def _build_command(self, binary_path: str, credentials: str, extra_args: str) -> list[str]:
         """Construct the argv for the binary.
 
@@ -295,7 +420,7 @@ class ProcessManager:
     # ------------------------------------------------------------------ #
     # log tailer — extracts join_link from binary output
     # ------------------------------------------------------------------ #
-    async def _tailer(self, tracked: TrackedProcess) -> None:
+    async def _tailer(self, tracked: TrackedProcess, start_pos: int = 0) -> None:
         """Periodically scan the instance log for a ``join_link:`` line.
 
         All creator binaries emit something like::
@@ -306,12 +431,16 @@ class ProcessManager:
         Once found, the link is persisted to ``instances.output_link`` in the
         DB and the tailer stops (no point rescanning). If the process exits
         before a link appears the tailer simply ends — no error.
+
+        *start_pos* is the byte offset to resume from — used by ``reattach()``
+        so an already-running binary's existing log isn't rescanned and only
+        newly appended lines are considered.
         """
         iid = tracked.instance_id
         log_path = tracked.log_path
         if log_path is None:
             return
-        last_pos = 0  # byte offset into the log file
+        last_pos = start_pos  # byte offset into the log file
         try:
             while tracked.alive:
                 await asyncio.sleep(0.5)

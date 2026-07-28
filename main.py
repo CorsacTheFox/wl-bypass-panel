@@ -40,21 +40,52 @@ STATIC_DIR = BASE_DIR / "static"
 
 
 async def _reconcile_stale_instances() -> None:
-    """After a crash/restart, any rows still marked running are orphans (their
-    PIDs are no longer our children). Mark them crashed so the UI is honest."""
+    """After a restart, live instance rows point at binaries that may still be
+    running as OS processes (a ``systemctl restart`` doesn't kill them — they
+    live in their own session and the systemd unit uses ``KillMode=mixed``).
+
+    For each live row we re-adopt the PID if it is still alive (reattach
+    supervision: waiter, tailer, rescheduled timeout) and only mark ``crashed``
+    the ones whose process is genuinely gone.
+    """
+    from process_manager import _pid_alive  # local import: avoid cycle at import time
+
     rows = await db.fetchall(
-        """SELECT id FROM instances WHERE status IN ('pending','running','stopping')"""
+        """SELECT id, pid, timeout_at, output_link
+             FROM instances
+            WHERE status IN ('pending','running','stopping')"""
     )
+    if not rows:
+        return
+
+    adopted = 0
+    crashed = 0
     for r in rows:
+        iid = r["id"]
+        pid = r["pid"]
+        if _pid_alive(pid):
+            ok = await process_manager.reattach(
+                iid,
+                pid,
+                timeout_at=r["timeout_at"],
+                has_output_link=bool(r["output_link"]),
+            )
+            if ok:
+                adopted += 1
+                continue
+        # PID is gone (or reattach reported it dead): be honest in the UI.
         await db.execute(
             """UPDATE instances
                   SET status='crashed', ended_at=datetime('now'),
-                      error='process orphaned by server restart'
+                      error='process not found after server restart'
                 WHERE id=?""",
-            (r["id"],),
+            (iid,),
         )
-    if rows:
-        log.warning("Reconciled %d orphaned instance(s) after restart", len(rows))
+        crashed += 1
+    log.warning(
+        "Reconciled after restart: re-adopted %d live instance(s), marked %d crashed",
+        adopted, crashed,
+    )
 
 
 @asynccontextmanager
@@ -62,8 +93,10 @@ async def lifespan(app: FastAPI):
     ensure_dirs()
     await db.connect()
     await user_service.ensure_bootstrap_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
-    await _reconcile_stale_instances()
+    # Start the process manager (reaper loop) BEFORE re-adopting orphaned
+    # instances so their restarted waiters/tailers run on a live event loop.
     await process_manager.start()
+    await _reconcile_stale_instances()
     log.info("Started — admin=%s, listening on config HOST/PORT", ADMIN_USERNAME)
     try:
         yield
