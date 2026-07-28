@@ -513,6 +513,42 @@ function fmtTime(s) {
   return isNaN(d) ? s : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+/* Elapsed time since the given timestamp, formatted as "Hh Mm"
+   (e.g. "2h 14m"). Falls back to "Mm" / "<1m" for short durations. */
+function fmtAgo(s) {
+  if (!s) return '\u2014';
+  const d = new Date((s.includes(' ') ? s.replace(' ', 'T') : s) + 'Z');
+  if (isNaN(d)) return '\u2014';
+  const secs = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  if (m > 0) return `${m}m`;
+  return '<1m';
+}
+
+/* Parse any timestamp the backend emits into a Date:
+   - SQLite-style "YYYY-MM-DD HH:MM:SS" (UTC, no TZ) -> append 'Z'
+   - ISO with offset "2026-07-28T12:00:00+00:00"     -> parse as-is */
+function parseTs(s) {
+  if (!s) return null;
+  const d = s.includes('T') ? new Date(s) : new Date(s.replace(' ', 'T') + 'Z');
+  return isNaN(d) ? null : d;
+}
+
+/* Time remaining until the instance is auto-killed, formatted as
+   "Hh MMm" / "Mm" / "<1m". Returns null if there is no deadline. */
+function fmtRemaining(timeoutAt) {
+  const d = parseTs(timeoutAt);
+  if (!d) return null;
+  const secs = Math.floor((d.getTime() - Date.now()) / 1000);
+  if (secs <= 0) return 'expired';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`;
+  return `${m}m`;
+}
+
 function isTerminal(status) {
   return ['stopped','exited','crashed','timeout'].includes(status);
 }
@@ -838,7 +874,11 @@ async function refreshDashboard() {
           <td class="px-5 py-3">${linkCell}</td>
           <td class="px-5 py-3 font-mono text-gray-400 text-xs">${i.pid ?? '\u2014'}</td>
           <td class="px-5 py-3">${statusBadge(i.status)}</td>
-          <td class="px-5 py-3 text-gray-400 text-xs">${fmtTime(i.started_at)}</td>
+          <td class="px-5 py-3 text-gray-400 text-xs">
+            ${fmtTime(i.started_at)}
+            <div class="text-gray-600">up ${fmtAgo(i.started_at)}</div>
+            ${(() => { const r = fmtRemaining(i.timeout_at); return r ? `<div class="text-amber-500/80">left ${r}</div>` : ''; })()}
+          </td>
           <td class="px-5 py-3 text-right">
             ${isTerminal(i.status)
               ? '<span class="text-gray-600 text-xs">ended</span>'
@@ -1021,7 +1061,11 @@ async function refreshAdmin() {
           <td class="px-5 py-3">${linkTxt}</td>
           <td class="px-5 py-3 font-mono text-gray-400 text-xs">${i.pid ?? '\u2014'}</td>
           <td class="px-5 py-3">${statusBadge(i.status)}</td>
-          <td class="px-5 py-3 text-gray-400 text-xs">${fmtTime(i.started_at)}</td>
+          <td class="px-5 py-3 text-gray-400 text-xs">
+            ${fmtTime(i.started_at)}
+            <div class="text-gray-600">up ${fmtAgo(i.started_at)}</div>
+            ${(() => { const r = fmtRemaining(i.timeout_at); return r ? `<div class="text-amber-500/80">left ${r}</div>` : ''; })()}
+          </td>
         </tr>`;
       }).join('');
     }

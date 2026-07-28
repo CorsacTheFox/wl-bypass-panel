@@ -305,7 +305,7 @@ async def overview():
     from db import db
     rows = await db.fetchall(
         """SELECT i.id, i.user_id, u.username, s.name AS service_name,
-                  i.pid, i.status, i.started_at, i.output_link
+                  i.pid, i.status, i.started_at, i.timeout_at, i.output_link
              FROM instances i
              JOIN users u ON u.id = i.user_id
              JOIN services s ON s.id = i.service_id

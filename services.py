@@ -687,7 +687,7 @@ class InstanceService:
         sql = """
             SELECT i.id, i.user_id, i.service_id, s.name AS service_name,
                    i.pid, i.status, i.started_at, i.ended_at, i.exit_code, i.error,
-                   i.output_link
+                   i.timeout_at, i.output_link
               FROM instances i
               JOIN services s ON s.id = i.service_id
              WHERE i.user_id = ?
@@ -787,7 +787,7 @@ class InstanceService:
         row = await db.fetchone(
             """SELECT i.id, i.user_id, i.service_id, s.name AS service_name,
                       i.pid, i.status, i.started_at, i.ended_at, i.exit_code, i.error,
-                      i.output_link
+                      i.timeout_at, i.output_link
                  FROM instances i JOIN services s ON s.id = i.service_id
                 WHERE i.id=?""",
             (instance_id,),
