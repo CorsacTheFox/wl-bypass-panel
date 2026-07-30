@@ -74,10 +74,6 @@ CREATE TABLE IF NOT EXISTS instances (
     error        TEXT,
     output_link  TEXT,                          -- join_link extracted from binary stdout (e.g. wbstream://...)
     is_quick     INTEGER NOT NULL DEFAULT 0,    -- 1 if created via the public /quick flow
-    -- 1 if created via the authorized native-app connect flow
-    -- (GET /api/app/connect). Lets app sessions be attributed/tracked
-    -- separately and resumed idempotently while the connection is live.
-    app_session  INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
     FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
 );
@@ -136,8 +132,6 @@ class Database:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN output_link TEXT")
         if "is_quick" not in columns:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN is_quick INTEGER NOT NULL DEFAULT 0")
-        if "app_session" not in columns:
-            await self._conn.execute("ALTER TABLE instances ADD COLUMN app_session INTEGER NOT NULL DEFAULT 0")
         # Migration: add password_must_change column if missing.
         rows = await self._conn.execute_fetchall("PRAGMA table_info(users)")
         user_columns = [row[1] for row in rows]
