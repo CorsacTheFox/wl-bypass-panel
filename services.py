@@ -22,10 +22,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from config import (
+    APP_DEFAULT_TIMEOUT_SECONDS,
     BINARIES_DIR,
     COOKIES_DIR,
     DEFAULT_MAX_CONCURRENT,
     DEFAULT_TIMEOUT_SECONDS,
+    TELEGRAM_AUTO_CAN_CREATE,
     ensure_dirs,
 )
 from db import db
@@ -271,7 +273,7 @@ class UserService:
             username=username or f"tg_{telegram_id}",
             password=None,
             telegram_id=telegram_id,
-            can_create_instances=False,
+            can_create_instances=TELEGRAM_AUTO_CAN_CREATE,
             must_change_password=False,
         )
 
@@ -622,6 +624,12 @@ class SettingsStore:
         "quick_service_id": ("WB_QUICK_DEFAULT_SERVICE_ID", int),
         # global cap on simultaneous quick sessions.
         "quick_max_concurrent": ("WB_QUICK_MAX_CONCURRENT", int),
+        # When true, Telegram-auto-created accounts get can_create_instances=1
+        # (so the native app works out-of-the-box). Env: WB_TELEGRAM_AUTO_CAN_CREATE.
+        "telegram_auto_can_create": ("WB_TELEGRAM_AUTO_CAN_CREATE", "bool"),
+        # Instance timeout (seconds) used by the authorized app connect flow.
+        # Env: WB_APP_DEFAULT_TIMEOUT_SECONDS (default 24h).
+        "app_default_timeout_seconds": ("WB_APP_DEFAULT_TIMEOUT_SECONDS", int),
     }
 
     async def get_all(self) -> dict:
@@ -644,29 +652,42 @@ class SettingsStore:
     async def set(self, key: str, value) -> None:
         if key not in self._DEFAULTS:
             raise KeyError(f"unknown setting: {key}")
+        _, parser = self._DEFAULTS[key]
+        if parser == "bool":
+            stored = "1" if str(value).strip().lower() in ("1", "true", "yes", "on") else "0"
+        else:
+            stored = str(value)
         await db.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, str(value)),
+            (key, stored),
         )
+
+    # built-in defaults used when neither a DB row nor an env override is set.
+    _BUILTINS = {
+        "quick_service_id": 0,
+        "quick_max_concurrent": 5,
+        "telegram_auto_can_create": False,
+        "app_default_timeout_seconds": APP_DEFAULT_TIMEOUT_SECONDS,
+    }
+
+    @staticmethod
+    def _coerce(raw, parser, key):
+        if parser == "bool":
+            return str(raw).strip().lower() in ("1", "true", "yes", "on")
+        try:
+            return parser(raw)
+        except (TypeError, ValueError):
+            return SettingsStore._BUILTINS.get(key)
 
     def _parse_or_fallback(self, raw, env_name, parser, key):
         import os
         if raw is None or raw == "":
             env_val = os.getenv(env_name, "")
             if env_val == "":
-                # per-key built-in defaults
-                if key == "quick_service_id":
-                    return 0
-                if key == "quick_max_concurrent":
-                    return 5
-                return None
+                return self._BUILTINS.get(key)
             raw = env_val
-        try:
-            return parser(raw)
-        except (TypeError, ValueError):
-            # last resort: built-in default
-            return 0 if key == "quick_service_id" else 5
+        return self._coerce(raw, parser, key)
 
 
 settings_store = SettingsStore()
@@ -712,7 +733,7 @@ class InstanceService:
 
     async def start(self, user_id: int, service_id: int,
                     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
-                    is_quick: bool = False) -> dict:
+                    is_quick: bool = False, app_session: bool = False) -> dict:
         # 1. concurrency check (the core business rule).
         # Admins bypass the cap — unlimited concurrent instances.
         user = await user_service.get(user_id)
@@ -737,9 +758,11 @@ class InstanceService:
             datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
         ).isoformat()
         cur = await db.execute(
-            """INSERT INTO instances (user_id, service_id, status, timeout_at, is_quick)
-               VALUES (?, ?, 'pending', ?, ?)""",
-            (user_id, service_id, timeout_at, 1 if is_quick else 0),
+            """INSERT INTO instances
+                   (user_id, service_id, status, timeout_at, is_quick, app_session)
+               VALUES (?, ?, 'pending', ?, ?, ?)""",
+            (user_id, service_id, timeout_at,
+             1 if is_quick else 0, 1 if app_session else 0),
         )
         instance_id = cur.lastrowid
 
@@ -761,6 +784,57 @@ class InstanceService:
         # 4. schedule timeout enforcement
         await process_manager.schedule_timeout(instance_id, float(timeout_seconds))
         return await self._get(instance_id)
+
+    async def _active_app_session(self, user_id: int) -> dict | None:
+        """The user's live app-session instance with a ready output_link, if any.
+
+        Used to make GET /api/app/connect idempotent: if the app reconnects
+        (relaunch, network blip) while its instance is still alive and has a
+        link, we hand back the *same* link instead of starting a new one.
+        """
+        row = await db.fetchone(
+            """SELECT i.id, i.status, i.output_link, i.timeout_at
+                 FROM instances i
+                WHERE i.user_id=? AND i.app_session=1
+                      AND i.status IN ('pending','running','stopping')
+             ORDER BY i.id DESC LIMIT 1""",
+            (user_id,),
+        )
+        return dict(row) if row else None
+
+    async def start_or_resume_active(self, user_id: int, service_id: int,
+                                     timeout_seconds: int) -> dict:
+        """Authorized app "connect": one link per live connection.
+
+        If the user already has a live app-session instance with an
+        ``output_link``, return it unchanged (same link — a reconnect).
+        Otherwise start a fresh app-session instance. Privilege / quota are
+        enforced inside :meth:`start` (ForbiddenError / ConcurrencyLimitError
+        propagate).
+        """
+        active = await self._active_app_session(user_id)
+        if active and active.get("output_link"):
+            return await self._get(active["id"])
+        return await self.start(
+            user_id, service_id, timeout_seconds=timeout_seconds, app_session=True
+        )
+
+    async def stop_app_session(self, user_id: int) -> list[int]:
+        """Authorized app "disconnect": stop the user's live app-session
+        instances. Idempotent — returns the list of instance ids actually
+        stopped (empty if nothing was live).
+        """
+        rows = await db.fetchall(
+            """SELECT id FROM instances
+                WHERE user_id=? AND app_session=1
+                      AND status IN ('pending','running','stopping')""",
+            (user_id,),
+        )
+        stopped: list[int] = []
+        for r in rows:
+            await process_manager.stop(r["id"])
+            stopped.append(r["id"])
+        return stopped
 
     async def stop(self, user_id: int, instance_id: int) -> dict:
         row = await db.fetchone(

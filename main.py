@@ -24,8 +24,10 @@ from config import ADMIN_PASSWORD, ADMIN_USERNAME, BASE_DIR, ensure_dirs
 from db import db
 from process_manager import process_manager
 from routers import admin as admin_router
+from routers import app as app_router
 from routers import auth as auth_router
 from routers import client as client_router
+from routers import public as public_router
 from routers import quick as quick_router
 from routers import telegram as telegram_router
 from services import user_service
@@ -109,10 +111,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Whitelist-Bypass Instance Manager", lifespan=lifespan)
 
 # Routers
+app.include_router(public_router.router)
 app.include_router(auth_router.router)
 app.include_router(telegram_router.router)
 app.include_router(admin_router.router)
 app.include_router(client_router.router)
+app.include_router(app_router.router)
 app.include_router(quick_router.router)
 
 # Static assets (CSS/JS)
@@ -128,9 +132,9 @@ async def health():
 # Quick-launch page: NON-INTERACTIVE. GET /quick starts an instance, waits for
 # the join link, and renders a styled HTML page showing it (server-side, no JS).
 # The raw plain-text link is available at /api/quick/link for bots/integrations.
-from fastapi import HTTPException  # noqa: E402
+from fastapi import HTTPException, Request  # noqa: E402
 from fastapi.responses import HTMLResponse, PlainTextResponse  # noqa: E402
-from routers.quick import produce_link  # noqa: E402
+from routers.quick import produce_link, _require_quick_token  # noqa: E402
 
 
 def _escape(s: str) -> str:
@@ -192,8 +196,9 @@ def _quick_html_page(link: str) -> str:
 
 
 @app.get("/quick")
-async def quick_page():
+async def quick_page(request: Request):
     """Styled non-interactive page showing the ready link (server-rendered)."""
+    await _require_quick_token(request)  # same guard as the /api/quick router
     try:
         link = await produce_link()
     except HTTPException:

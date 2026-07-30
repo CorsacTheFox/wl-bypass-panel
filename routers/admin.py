@@ -321,6 +321,11 @@ async def overview():
 class SettingsUpdate(BaseModel):
     quick_service_id: int | None = Field(default=None, ge=0)
     quick_max_concurrent: int | None = Field(default=None, ge=0, le=100)
+    # When true, Telegram-auto-created accounts get instance-creation privilege
+    # automatically (so the Android app works out-of-the-box).
+    telegram_auto_can_create: bool | None = None
+    # Instance lifetime (seconds) used by the authorized app connect flow.
+    app_default_timeout_seconds: int | None = Field(default=None, ge=60)
 
 
 @router.get("/settings")

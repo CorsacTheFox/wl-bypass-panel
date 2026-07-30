@@ -38,6 +38,17 @@ DEFAULT_TIMEOUT_SECONDS = int(os.getenv("WB_DEFAULT_TIMEOUT_SECONDS", "3600"))  
 PROCESS_KILL_GRACE_SECONDS = float(os.getenv("WB_KILL_GRACE_SECONDS", "5"))
 REAPER_INTERVAL_SECONDS = float(os.getenv("WB_REAPER_INTERVAL", "2"))
 
+# Native Android app connect flow (authorized clients). The app does
+# GET /api/app/connect on connect and GET /api/app/disconnect on disconnect,
+# and wants the link to live for the whole connection — so the instance it
+# starts gets a long timeout, distinct from the 1h default above and the
+# 15-min public quick flow. Default 24h.
+APP_DEFAULT_TIMEOUT_SECONDS = int(os.getenv("WB_APP_DEFAULT_TIMEOUT_SECONDS", str(24 * 3600)))
+
+
+def _parse_bool(raw: str) -> bool:
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
 SESSION_TTL_SECONDS = int(os.getenv("WB_SESSION_TTL", str(12 * 3600)))
 PBKDF2_ITERATIONS = 200_000
 
@@ -58,6 +69,14 @@ TELEGRAM_BOT_TOKEN = os.getenv("WB_TELEGRAM_BOT_TOKEN", "")
 # Maximum age (in seconds) of a Telegram initData before it is rejected as a
 # replay. Telegram recommends keeping this short; 24h matches the session TTL.
 TELEGRAM_INIT_DATA_MAX_AGE = int(os.getenv("WB_TG_INITDATA_MAX_AGE", str(24 * 3600)))
+# Public bot username (without '@') the Android app should log into. This is
+# advertised via GET /api/config so the APK never needs the bot token. Empty
+# means "not advertised" (the app must then be configured out-of-band).
+TELEGRAM_BOT_USERNAME = os.getenv("WB_TELEGRAM_BOT_USERNAME", "")
+# When True, Telegram-auto-created accounts are created with
+# can_create_instances=True so the app works out-of-the-box. When False (the
+# default) an admin must grant the privilege per user, mirroring the web flow.
+TELEGRAM_AUTO_CAN_CREATE = _parse_bool(os.getenv("WB_TELEGRAM_AUTO_CAN_CREATE", "0"))
 
 
 def ensure_dirs() -> None:

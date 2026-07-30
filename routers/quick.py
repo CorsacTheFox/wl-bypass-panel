@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 
-from config import BASE_DIR
+from config import BASE_DIR, QUICK_TOKEN
 from db import db
 from services import (
     ConcurrencyLimitError,
@@ -28,7 +28,30 @@ from services import (
     settings_store,
 )
 
-router = APIRouter(prefix="/api/quick", tags=["quick"])
+async def _require_quick_token(request: Request) -> None:
+    """Guard the public quick flow with an API key when one is configured.
+
+    When ``WB_QUICK_TOKEN`` is unset (the default) the quick flow stays open —
+    convenient for local/dev use. When it IS set, callers must present it via
+    the ``X-Api-Key`` header or a ``?token=`` query param. This stops anonymous
+    drive-by abuse of the unauthenticated client link on a deployed server.
+    """
+    if not QUICK_TOKEN:
+        return
+    presented = request.headers.get("x-api-key") or request.query_params.get("token") or ""
+    if presented != QUICK_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="invalid or missing API key",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+
+
+router = APIRouter(
+    prefix="/api/quick",
+    tags=["quick"],
+    dependencies=[Depends(_require_quick_token)],
+)
 
 QUICK_HTML = BASE_DIR / "quick.html"  # noqa: F841 — referenced only for documentation
 _QUICK_TIMEOUT = 900  # 15 minutes in seconds
