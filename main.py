@@ -203,6 +203,20 @@ async def quick_page():
     return HTMLResponse(_quick_html_page(link))
 
 
+# Telegram Mini App bridge page: the thin page BotFather's Mini App button
+# points at. It reads Telegram.WebApp.initData and deep-links it back to the
+# Android app via corsconnect://tginit?initdata=... . Served explicitly (rather
+# than via the SPA fallback) so the route is stable and self-documenting.
+TG_AUTH_PAGE = STATIC_DIR / "tg-auth.html"
+
+
+@app.get("/tg-auth")
+async def tg_auth_page():
+    if TG_AUTH_PAGE.exists():
+        return FileResponse(TG_AUTH_PAGE)
+    return {"detail": "tg-auth page not found"}
+
+
 # SPA fallback: any non-API, non-static GET -> index.html
 INDEX = STATIC_DIR / "index.html"
 

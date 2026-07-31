@@ -81,6 +81,59 @@ The Android API uses **two** layers:
    Authorization: Bearer <token>
    ```
 
+---
+
+## 3a. Telegram Mini App bridge (`/tg-auth`)
+
+The Android app cannot read Telegram's `initData` directly — it lives inside
+Telegram's WebView. A **thin server-side Mini App page** bridges the two: when
+the user taps "Sign in with Telegram" in the Android app, the app opens the bot
+(`@wl_cors_bot`) in Telegram; Telegram loads this page, which reads `initData`
+and deep-links it back to the Android app.
+
+The page is built into the server at **`GET /tg-auth`** (`static/tg-auth.html`)
+and does exactly one thing:
+
+```js
+Telegram.WebApp.openLink(
+  "corsconnect://tginit?initdata=" + encodeURIComponent(initData)
+);
+```
+
+**BotFather setup (one-time):**
+
+1. Open `@BotFather` → your bot → **Bot Settings** → **Menu Button** (or **Mini
+   App Settings**).
+2. Set the **Mini App URL** to your deployed bridge page:
+   ```
+   https://<your-domain>/tg-auth
+   ```
+   (Telegram requires HTTPS. **Do not** point it at `/` — that loads the web
+   dashboard, which logs into the web app instead of returning to Android.)
+3. Save. The bot's menu button now opens the bridge page.
+
+**How the handoff works:**
+
+| Step | Actor | Action |
+|---|---|---|
+| 1 | Android app | User taps "Sign in with Telegram"; app opens `@wl_cors_bot`. |
+| 2 | Telegram | Loads `https://<domain>/tg-auth` inside its WebView; injects `initData`. |
+| 3 | Bridge page | Reads `Telegram.WebApp.initData`, validates shape, calls `openLink(corsconnect://tginit?initdata=...)`. |
+| 4 | Android OS | Intent-filter (`scheme=corsconnect host=tginit`) delivers the deep link to the running app via `onNewIntent`. |
+| 5 | Android app | `Uri.decode`s `initdata`, then `POST /api/app/instances/{id}/claim`. |
+
+**Deep-link contract (must match the Android manifest):**
+
+- Scheme: `corsconnect` (exact)
+- Host: `tginit` (exact)
+- Query param: `initdata` (lowercase; `initData` also accepted by the app)
+- Value: the **raw, complete** `initData`, URL-encoded (`encodeURIComponent`).
+
+The bridge page handles the edge cases from the spec automatically:
+- **`initData` empty** (opened outside Telegram) → shows "Open in Telegram", no redirect.
+- **`openLink` unavailable** (very old client) → falls back to `window.location.href`.
+- **`initData` expired (>24h)** → no page action; the server returns `401` at claim and the app re-prompts.
+
 > The `initData` has a replay window (`WB_TG_INITDATA_MAX_AGE`, default 24 h).
 > Obtain it fresh each session.
 
@@ -123,7 +176,7 @@ Standalone Telegram login (not required by the claim flow, which validates initD
 1. **On app open:** call `GET /api/app/health`. If `service_available` is false, show "service unavailable"; if `telegram_enabled` is false, the claim step will not work.
 2. **Create temp instance:** `POST /api/app/instances`. Store `instance_id` and `claim_token`. Poll `GET /api/app/instances/{id}` until `output_link` appears (or `status` becomes terminal).
 3. **Authorize inside the service:** present `output_link` to the user; they complete authorization within the temp window (`WB_APP_TEMP_TIMEOUT`, default 10 min).
-4. **Authenticate + claim:** obtain the Telegram `initData`, then `POST /api/app/instances/{id}/claim`. Persist the returned `token` and `username`.
+4. **Authenticate + claim:** the user taps "Sign in with Telegram", which opens `@wl_cors_bot`; Telegram loads the `/tg-auth` bridge page, which deep-links `initData` back to the app via `corsconnect://tginit?initdata=...` (see [§3a](#3a-telegram-mini-app-bridge-tg-auth)). The app extracts `initData`, then `POST /api/app/instances/{id}/claim`. Persist the returned `token` and `username`.
 5. **Already authenticated?** If the app holds a valid bearer from a prior session, it can still call `claim` with fresh `initData` to transfer the instance, or simply reuse the existing session and call `POST /api/app/instances` then immediately claim.
 6. **On disconnect:** `DELETE /api/app/instances/{id}`. If the app crashes, the server's `timeout_at` (1 h after claim, 10 min before) kills the instance as a safety net.
 
