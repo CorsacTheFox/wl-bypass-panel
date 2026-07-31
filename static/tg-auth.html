@@ -35,7 +35,7 @@
       box-shadow: 0 10px 28px rgba(124, 58, 237, 0.28);
     }
     h1 { color: #fff; font-size: 1.2rem; font-weight: 600; margin: 0 0 .5rem; }
-    .sub { color: #6b7280; font-size: .82rem; margin: 0 0 1.5rem; line-height: 1.5; }
+    .sub { color: #6b7280; font-size: .82rem; margin: 0 0 1.25rem; line-height: 1.5; }
     .spinner {
       width: 30px; height: 30px;
       border: 3px solid rgba(255, 255, 255, 0.12);
@@ -49,6 +49,23 @@
     .error .logo { background: #b91c1c; box-shadow: 0 10px 28px rgba(185, 28, 28, 0.25); }
     .error h1 { margin-bottom: .35rem; }
     .hidden { display: none !important; }
+    .btn-action {
+      display: inline-block;
+      width: 100%;
+      padding: 0.85rem 1.25rem;
+      margin-top: 1rem;
+      background: #7c3aed;
+      color: #ffffff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35);
+      transition: background 0.2s ease;
+    }
+    .btn-action:active { background: #6d28d9; }
   </style>
 </head>
 <body>
@@ -63,8 +80,9 @@
       <div id="view-loading">
         <h1>Authorizing Cors.Connect</h1>
         <p class="sub">Returning you to the app…</p>
-        <div class="spinner" aria-label="loading"></div>
+        <div class="spinner" id="spinner" aria-label="loading"></div>
         <p class="state-line" id="status-loading">Preparing…</p>
+        <button id="btn-return" class="btn-action hidden">Open Cors.Connect App</button>
       </div>
 
       <div id="view-error" class="error hidden">
@@ -82,13 +100,14 @@
       var SCHEME = "corsconnect";
       var HOST = "tginit";
       var PARAM = "initdata";
-      var ANDROID_PACKAGE_NAME = "com.corsconnect.app"; // Укажите реальный package_name
 
       var statusEl = document.getElementById("status-loading");
       var loadingView = document.getElementById("view-loading");
       var errorView = document.getElementById("view-error");
       var errorTitle = document.getElementById("error-title");
       var errorMessage = document.getElementById("error-message");
+      var btnReturn = document.getElementById("btn-return");
+      var spinner = document.getElementById("spinner");
 
       function setStatus(text) {
         if (statusEl) statusEl.textContent = text;
@@ -130,27 +149,41 @@
       function deliverInitData(initData) {
         var encodedData = encodeURIComponent(initData);
         var customSchemeUrl = SCHEME + "://" + HOST + "?" + PARAM + "=" + encodedData;
-        var intentUrl = "intent://" + HOST + "?" + PARAM + "=" + encodedData + "#Intent;scheme=" + SCHEME + ";package=" + ANDROID_PACKAGE_NAME + ";end";
-        
+        var intentUrl = "intent://" + HOST + "?" + PARAM + "=" + encodedData + "#Intent;scheme=" + SCHEME + ";end";
+
         var isAndroid = /android/i.test(navigator.userAgent);
-        var wa = window.Telegram && window.Telegram.WebApp;
+        var targetUrl = isAndroid ? intentUrl : customSchemeUrl;
 
-        if (isAndroid) {
-          window.location.href = intentUrl;
-          setStatus("Redirecting to Cors.Connect…");
-          return;
+        function doRedirect() {
+          var wa = window.Telegram && window.Telegram.WebApp;
+          if (!isAndroid && wa && typeof wa.openLink === "function") {
+            try {
+              wa.openLink(customSchemeUrl);
+              return;
+            } catch (e) {}
+          }
+          window.location.href = targetUrl;
         }
 
-        if (wa && typeof wa.openLink === "function") {
+        if (btnReturn) {
+          btnReturn.classList.remove("hidden");
+          btnReturn.onclick = function () {
+            doRedirect();
+          };
+        }
+
+        setStatus(isAndroid ? "Tap button if app doesn't open..." : "Redirecting to Cors.Connect…");
+
+        try {
+          doRedirect();
+        } catch (e) {}
+
+        setTimeout(function () {
           try {
-            wa.openLink(customSchemeUrl);
-            setStatus("Redirecting to Cors.Connect…");
-            return;
+            var wa = window.Telegram && window.Telegram.WebApp;
+            if (wa && typeof wa.close === "function") wa.close();
           } catch (e) {}
-        }
-
-        window.location.href = customSchemeUrl;
-        setStatus("Redirecting to Cors.Connect…");
+        }, 3000);
       }
 
       function start() {
@@ -169,15 +202,7 @@
           return;
         }
 
-        setStatus("Sending authorization to Cors.Connect…");
         deliverInitData(initData);
-
-        setTimeout(function () {
-          try {
-            var wa = window.Telegram && window.Telegram.WebApp;
-            if (wa && typeof wa.close === "function") wa.close();
-          } catch (e) {}
-        }, 1200);
       }
 
       if (document.readyState === "loading") {
