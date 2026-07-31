@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <!-- Telegram WebApp SDK. Must load before any code that reads initData. -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
   <title>Authorizing Cors.Connect…</title>
   <style>
@@ -37,8 +36,6 @@
     }
     h1 { color: #fff; font-size: 1.2rem; font-weight: 600; margin: 0 0 .5rem; }
     .sub { color: #6b7280; font-size: .82rem; margin: 0 0 1.5rem; line-height: 1.5; }
-
-    /* Spinner (shown during the brief redirect) */
     .spinner {
       width: 30px; height: 30px;
       border: 3px solid rgba(255, 255, 255, 0.12);
@@ -48,14 +45,9 @@
       animation: spin 0.8s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-
     .state-line { color: #9ca3af; font-size: .82rem; margin: 0; }
-    .state-line.strong { color: #e5e7eb; font-weight: 500; }
-
-    /* Error state */
     .error .logo { background: #b91c1c; box-shadow: 0 10px 28px rgba(185, 28, 28, 0.25); }
     .error h1 { margin-bottom: .35rem; }
-
     .hidden { display: none !important; }
   </style>
 </head>
@@ -68,7 +60,6 @@
         </svg>
       </div>
 
-      <!-- Loading / redirecting state -->
       <div id="view-loading">
         <h1>Authorizing Cors.Connect</h1>
         <p class="sub">Returning you to the app…</p>
@@ -76,7 +67,6 @@
         <p class="state-line" id="status-loading">Preparing…</p>
       </div>
 
-      <!-- Error state: opened outside Telegram, or no initData -->
       <div id="view-error" class="error hidden">
         <h1 id="error-title">Open in Telegram</h1>
         <p class="sub" id="error-message">This page only works inside the Telegram app.</p>
@@ -86,33 +76,19 @@
   </div>
 
   <script>
-    // CORS.Connect → Android authorization bridge.
-    //
-    // Single responsibility: read the Telegram WebApp initData that Telegram
-    // injects when this Mini App is loaded inside Telegram, and hand it back to
-    // the Android app via the deep link:
-    //
-    //   corsconnect://tginit?initdata=<URL-ENCODED initData>
-    //
-    // The Android app validates the initData shape on receipt and later POSTs it
-    // to /api/app/instances/{id}/claim, where the server validates the HMAC
-    // signature. This page does NOT validate the signature — it only forwards
-    // the raw, complete initData. See docs/ANDROID_INTEGRATION.md.
-
     (function () {
       "use strict";
 
       var SCHEME = "corsconnect";
       var HOST = "tginit";
-      var PARAM = "initdata"; // Android accepts "initData" too, but use lowercase.
-      var DEEP_LINK = SCHEME + "://" + HOST + "?" + PARAM + "=";
+      var PARAM = "initdata";
+      var ANDROID_PACKAGE_NAME = "com.corsconnect.app"; // Укажите реальный package_name
 
       var statusEl = document.getElementById("status-loading");
       var loadingView = document.getElementById("view-loading");
       var errorView = document.getElementById("view-error");
       var errorTitle = document.getElementById("error-title");
       var errorMessage = document.getElementById("error-message");
-      var card = document.getElementById("card");
 
       function setStatus(text) {
         if (statusEl) statusEl.textContent = text;
@@ -126,9 +102,6 @@
         try { setStatus(""); } catch (e) {}
       }
 
-      // initData is a non-empty query string containing at least hash= and one
-      // of auth_date= / query_id= / user=. If absent or malformed, the Mini App
-      // was almost certainly opened outside Telegram.
       function looksLikeInitData(s) {
         if (!s || typeof s !== "string") return false;
         if (s.indexOf("hash=") === -1) return false;
@@ -140,62 +113,58 @@
       }
 
       function readInitData() {
-        // 1. JS API (preferred).
         try {
           var waInit = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData;
           if (waInit) return waInit;
-        } catch (e) { /* fall through to URL parsing */ }
+        } catch (e) {}
 
-        // 2. URL parameter fallback: Telegram appends tgWebAppData=<URL-encoded
-        //    initData> to the Mini App URL (in the hash for t.me links, in the
-        //    query for direct https URLs). Check both.
         try {
           var loc = window.location.href;
-          // Collect from both search and hash.
-          var fromHash = new URL(loc.replace("#", "?")); // normalize #tgWebAppData= -> ?tgWebAppData=
+          var fromHash = new URL(loc.replace("#", "?"));
           var v = fromHash.searchParams.get("tgWebAppData");
           if (v) return v;
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
         return "";
       }
 
       function deliverInitData(initData) {
-        // encodeURIComponent is critical: initData itself is a query string and
-        // contains & and = — without encoding, those would corrupt the outer
-        // corsconnect:// URL. The Android app calls Uri.decode on receipt.
-        var url = DEEP_LINK + encodeURIComponent(initData);
+        var encodedData = encodeURIComponent(initData);
+        var customSchemeUrl = SCHEME + "://" + HOST + "?" + PARAM + "=" + encodedData;
+        var intentUrl = "intent://" + HOST + "?" + PARAM + "=" + encodedData + "#Intent;scheme=" + SCHEME + ";package=" + ANDROID_PACKAGE_NAME + ";end";
+        
+        var isAndroid = /android/i.test(navigator.userAgent);
         var wa = window.Telegram && window.Telegram.WebApp;
 
-        // openLink is the only reliable cross-version way to break out of
-        // Telegram's in-app WebView to a custom scheme. Fall back to a direct
-        // navigation for very old clients / standalone browsers.
+        if (isAndroid) {
+          window.location.href = intentUrl;
+          setStatus("Redirecting to Cors.Connect…");
+          return;
+        }
+
         if (wa && typeof wa.openLink === "function") {
           try {
-            wa.openLink(url);
+            wa.openLink(customSchemeUrl);
             setStatus("Redirecting to Cors.Connect…");
             return;
-          } catch (e) {
-            /* fall through to location fallback */
-          }
+          } catch (e) {}
         }
-        window.location.href = url;
+
+        window.location.href = customSchemeUrl;
         setStatus("Redirecting to Cors.Connect…");
       }
 
       function start() {
-        // Tell Telegram we're ready and want the full viewport.
         try {
           var wa = window.Telegram && window.Telegram.WebApp;
           if (wa) {
             if (typeof wa.ready === "function") wa.ready();
             if (typeof wa.expand === "function") wa.expand();
           }
-        } catch (e) { /* non-fatal */ }
+        } catch (e) {}
 
         var initData = readInitData();
 
         if (!looksLikeInitData(initData)) {
-          // Opened outside Telegram (or initData not injected yet).
           showError("Open in Telegram", "This page only works inside the Telegram app.");
           return;
         }
@@ -203,18 +172,14 @@
         setStatus("Sending authorization to Cors.Connect…");
         deliverInitData(initData);
 
-        // The flow is one-way: once the redirect fires, control passes to the
-        // Android app. Show a brief confirmation and close the Mini App. Don't
-        // wait for a response — there isn't one.
         setTimeout(function () {
           try {
             var wa = window.Telegram && window.Telegram.WebApp;
             if (wa && typeof wa.close === "function") wa.close();
-          } catch (e) { /* ignore */ }
+          } catch (e) {}
         }, 1200);
       }
 
-      // Kick off as soon as the DOM is ready.
       if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", start);
       } else {
