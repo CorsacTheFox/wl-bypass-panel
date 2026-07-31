@@ -88,10 +88,9 @@
   (function () {
       "use strict";
 
-      var SCHEME = "corsconnect";
-      var HOST = "tginit";
+      // Используем HTTPS хост, прописанный в AndroidManifest.xml
+      var APP_HOST = "https://alpha.cors-fox.cc/tginit";
       var PARAM = "initdata";
-      var ANDROID_PACKAGE_NAME = "cc.cors.connect";
 
       var loadingView = document.getElementById("view-loading");
       var errorView = document.getElementById("view-error");
@@ -120,15 +119,13 @@
       function readInitData() {
           try {
               var wa = window.Telegram && window.Telegram.WebApp;
-              if (wa && wa.initData)
-                  return wa.initData;
+              if (wa && wa.initData) return wa.initData;
           } catch (e) {}
 
           try {
               var url = new URL(window.location.href.replace("#", "?"));
               var data = url.searchParams.get("tgWebAppData");
-              if (data)
-                  return data;
+              if (data) return data;
           } catch (e) {}
 
           return "";
@@ -136,71 +133,32 @@
 
       function setupClick(initData) {
           var encoded = encodeURIComponent(initData);
-
-          // Ссылка для iOS / Desktop
-          var customUrl =
-              SCHEME +
-              "://" +
-              HOST +
-              "?" +
-              PARAM +
-              "=" +
-              encoded;
-
-          // Intent ссылка для Android (не вызывает ERR_UNKNOWN_URL_SCHEME)
-          var intentUrl =
-              "intent://" +
-              HOST +
-              "?" +
-              PARAM +
-              "=" +
-              encoded +
-              "#Intent;" +
-              "scheme=" +
-              SCHEME +
-              ";" +
-              "package=" +
-              ANDROID_PACKAGE_NAME +
-              ";" +
-              "end";
+          var targetUrl = APP_HOST + "?" + PARAM + "=" + encoded;
 
           btnReturn.addEventListener("click", function () {
               var wa = window.Telegram && window.Telegram.WebApp;
-              var isAndroid = /android/i.test(navigator.userAgent);
 
-              if (isAndroid) {
-                  // Android: переход по Intent перехватывается ОС без ошибки WebView
-                  window.location.href = intentUrl;
+              // openLink с https:// корректно выведет пользователю системный промпт или сразу откроет App
+              if (wa && typeof wa.openLink === "function") {
+                  wa.openLink(targetUrl, { try_instant_view: false });
               } else {
-                  // iOS / Desktop: используем безопасный метод Telegram SDK
-                  if (wa && typeof wa.openLink === "function") {
-                      wa.openLink(customUrl, { try_instant_view: false });
-                  } else {
-                      window.location.href = customUrl;
-                  }
+                  window.location.href = targetUrl;
               }
 
-              // Автозакрытие Mini App через 1.5 секунды
               setTimeout(function () {
                   try {
-                      if (wa && typeof wa.close === "function") {
-                          wa.close();
-                      }
+                      if (wa && typeof wa.close === "function") wa.close();
                   } catch (e) {}
-              }, 1500);
+              }, 1000);
           });
       }
 
       function start() {
           try {
               var wa = window.Telegram && window.Telegram.WebApp;
-
               if (wa) {
-                  if (typeof wa.ready === "function")
-                      wa.ready();
-
-                  if (typeof wa.expand === "function")
-                      wa.expand();
+                  if (typeof wa.ready === "function") wa.ready();
+                  if (typeof wa.expand === "function") wa.expand();
               }
           } catch (e) {}
 
@@ -222,7 +180,6 @@
       } else {
           start();
       }
-
   })();
   </script>
 </body>
