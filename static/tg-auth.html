@@ -107,7 +107,6 @@
       var errorTitle = document.getElementById("error-title");
       var errorMessage = document.getElementById("error-message");
       var btnReturn = document.getElementById("btn-return");
-      var spinner = document.getElementById("spinner");
 
       function setStatus(text) {
         if (statusEl) statusEl.textContent = text;
@@ -156,13 +155,20 @@
 
         function doRedirect() {
           var wa = window.Telegram && window.Telegram.WebApp;
-          if (!isAndroid && wa && typeof wa.openLink === "function") {
+          
+          if (wa && typeof wa.openLink === "function") {
             try {
-              wa.openLink(customSchemeUrl);
+              wa.openLink(targetUrl);
               return;
-            } catch (e) {}
+            } catch (e) {
+              try {
+                wa.openLink(customSchemeUrl);
+                return;
+              } catch (e2) {}
+            }
           }
-          window.location.href = targetUrl;
+          
+          window.location.href = customSchemeUrl;
         }
 
         if (btnReturn) {
@@ -172,18 +178,11 @@
           };
         }
 
-        setStatus(isAndroid ? "Tap button if app doesn't open..." : "Redirecting to Cors.Connect…");
+        setStatus("Redirecting to Cors.Connect…");
 
         try {
           doRedirect();
         } catch (e) {}
-
-        setTimeout(function () {
-          try {
-            var wa = window.Telegram && window.Telegram.WebApp;
-            if (wa && typeof wa.close === "function") wa.close();
-          } catch (e) {}
-        }, 3000);
       }
 
       function start() {
