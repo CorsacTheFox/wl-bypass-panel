@@ -100,6 +100,27 @@ async def _get_instance_row(instance_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+async def _live_owned_instance(user_id: int) -> dict | None:
+    """A claimed (non-quick), live instance currently owned by *user_id*.
+
+    Used by the claim flow to detect reconnects (improper disconnect where the
+    process is still running) so the existing instance is reused instead of
+    spawning a duplicate. Returns the most recent matching row, or None.
+    """
+    row = await db.fetchone(
+        """SELECT i.id, i.user_id, i.service_id, s.name AS service_name,
+                  i.pid, i.status, i.started_at, i.ended_at, i.exit_code,
+                  i.error, i.timeout_at, i.output_link, i.is_quick
+             FROM instances i JOIN services s ON s.id = i.service_id
+            WHERE i.user_id=? AND i.is_quick=0
+              AND i.status IN ('pending','running','stopping')
+            ORDER BY i.id DESC
+            LIMIT 1""",
+        (user_id,),
+    )
+    return dict(row) if row else None
+
+
 def _new_claim_token() -> str:
     return secrets.token_urlsafe(32)
 
@@ -199,10 +220,21 @@ async def claim_instance(instance_id: int, body: ClaimIn):
     The running process is *not* restarted, so any authorization the user did
     inside the spawned service is preserved.
 
+    Permission: anyone may spawn a short temp instance, but converting it into a
+    full-lifetime owned instance requires the instance-creation privilege
+    (``users.can_create_instances``); admins always pass. This mirrors the gate
+    the regular client flow enforces in ``instance_service.start``.
+
+    Reconnect handling: if the user already owns a *live* (claimed) instance —
+    e.g. from an improper disconnect where the process is still running — that
+    instance is returned instead (with a fresh session token) and the new temp
+    instance is stopped. This prevents accumulating duplicate instances.
+
     Returns the user's session token (use it as ``Authorization: Bearer`` for
     subsequent calls) plus the now-permanent ``output_link``.
 
-    Errors: 401 bad initData, 404 instance/token mismatch, 410 instance gone.
+    Errors: 401 bad initData, 403 instance creation disabled, 404 instance/token
+    mismatch, 410 instance gone.
     """
     if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(
@@ -244,7 +276,39 @@ async def claim_instance(instance_id: int, body: ClaimIn):
         tg_user["id"], tg_user.get("username")
     )
 
-    # 3. transfer ownership + reset the timeout to the full lifetime.
+    # 3. privilege gate — temp (10 min) instances are open, but converting one
+    # into a full-lifetime (6h) owned instance requires the creation privilege.
+    if user["role"] != "admin" and not user.get("can_create_instances"):
+        # consume the token so the rejected temp instance can't be retried, then
+        # stop it so it doesn't occupy a quick slot for its 10-min TTL.
+        _claim_tokens.pop(body.claim_token, None)
+        await process_manager.stop(instance_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Instance creation is disabled for this account",
+        )
+
+    # 4. reconnect handling — if the user already owns a live claimed instance,
+    # reuse it instead of creating a duplicate. Stop the freshly spawned temp
+    # instance and hand back the existing one with a new session token.
+    existing = await _live_owned_instance(user["id"])
+    if existing is not None and existing["id"] != instance_id:
+        _claim_tokens.pop(body.claim_token, None)
+        await process_manager.stop(instance_id)
+        token = await create_session(user["id"])
+        return {
+            "instance_id": existing["id"],
+            "user_id": user["id"],
+            "token": token,
+            "role": user["role"],
+            "username": user["username"],
+            "status": existing["status"],
+            "output_link": existing.get("output_link"),
+            "expires_at": existing.get("timeout_at"),
+            "reused": True,
+        }
+
+    # 5. transfer ownership + reset the timeout to the full lifetime.
     new_timeout_at = (_now_utc() + timedelta(seconds=DEFAULT_TIMEOUT_SECONDS)).isoformat()
     await db.execute(
         "UPDATE instances SET user_id=?, is_quick=0, timeout_at=? WHERE id=?",

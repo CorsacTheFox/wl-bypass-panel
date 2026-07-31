@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from config import DEFAULT_TIMEOUT_SECONDS
 from security import require_client
 from services import (
     ConcurrencyLimitError,
@@ -49,7 +50,7 @@ async def list_instances(user=Depends(require_client)):
 async def start_call(body: StartCallIn, user=Depends(require_client)):
     try:
         return await instance_service.start(
-            user["id"], body.service_id, body.timeout_seconds or 3600
+            user["id"], body.service_id, body.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
         )
     except ForbiddenError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
