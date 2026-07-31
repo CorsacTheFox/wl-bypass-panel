@@ -63,12 +63,14 @@ APP_TOKEN = os.getenv("WB_APP_TOKEN", "")
 APP_TEMP_TIMEOUT = int(os.getenv("WB_APP_TEMP_TIMEOUT", "300"))
 
 # Heartbeat auto-extension for claimed instances. Each heartbeat from an
-# authenticated client adds HEARTBEAT_EXTENSION_SECONDS to the instance's
-# remaining lifetime, but never beyond HEARTBEAT_MAX_SECONDS from now (a hard
-# ceiling so a perpetually-heartbeating client can't keep an instance alive
-# indefinitely). Guests (pre-claim temp instances) cannot heartbeat.
+# *authorized* client (can_create_instances=1, or admin) adds
+# HEARTBEAT_EXTENSION_SECONDS to the instance's remaining lifetime, but never
+# beyond HEARTBEAT_MAX_SECONDS from now (a hard ceiling so a perpetually-
+# heartbeating client can't keep an instance alive indefinitely). Unauthorized
+# users are rejected at the heartbeat endpoint (403) — their instances are
+# strictly limited to the 5-minute temp/default TTL with no extension.
 HEARTBEAT_EXTENSION_SECONDS = int(os.getenv("WB_HEARTBEAT_EXT", "300"))   # +5 min / beat
-HEARTBEAT_MAX_SECONDS = int(os.getenv("WB_HEARTBEAT_MAX", str(4 * 3600)))  # 4h ceiling
+HEARTBEAT_MAX_SECONDS = int(os.getenv("WB_HEARTBEAT_MAX", "3600"))        # 1h ceiling
 # Set to the bot token obtained from BotFather to enable Telegram login.
 # When empty (default), POST /api/auth/telegram is disabled (returns 404),
 # mirroring the QUICK_TOKEN gating pattern.

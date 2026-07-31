@@ -683,6 +683,40 @@ class InstanceService:
         )
         return row["c"] if row else 0
 
+    async def find_active_app_session(self, telegram_id: int) -> dict | None:
+        """Return the still-live Android-app instance a Telegram user already has.
+
+        Looked up by the ``app_session`` tag (the Telegram id stamped at claim).
+        Used by the app-flow create endpoint to *reuse* a live instance on
+        reconnect instead of spawning a duplicate. Returns the most recent live
+        row, or None.
+        """
+        row = await db.fetchone(
+            """SELECT i.id, i.user_id, i.status, i.timeout_at, i.output_link, i.is_quick
+                 FROM instances i JOIN users u ON u.id = i.user_id
+                WHERE u.telegram_id=? AND i.app_session=?
+                  AND i.status IN ('pending','running','stopping')
+                ORDER BY i.id DESC LIMIT 1""",
+            (telegram_id, str(telegram_id)),
+        )
+        return dict(row) if row else None
+
+    async def claim_to_user(
+        self, instance_id: int, user_id: int, new_timeout_at: str, app_session_tag: str | None
+    ) -> None:
+        """Transfer a temp app instance to the claiming user and stamp its tag.
+
+        Consolidates the claim UPDATE: reassigns ``user_id``, clears the
+        ``is_quick`` flag, sets the new ``timeout_at`` and (for the app flow)
+        records ``app_session`` so the instance can be reused on reconnect.
+        The caller is still responsible for rescheduling the in-process timeout
+        killer (``process_manager.reschedule_timeout``).
+        """
+        await db.execute(
+            "UPDATE instances SET user_id=?, is_quick=0, timeout_at=?, app_session=? WHERE id=?",
+            (user_id, new_timeout_at, app_session_tag, instance_id),
+        )
+
     async def list_for_user(self, user_id: int, include_history: bool = False) -> list[dict]:
         sql = """
             SELECT i.id, i.user_id, i.service_id, s.name AS service_name,

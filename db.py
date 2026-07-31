@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS instances (
     error        TEXT,
     output_link  TEXT,                          -- join_link extracted from binary stdout (e.g. wbstream://...)
     is_quick     INTEGER NOT NULL DEFAULT 0,    -- 1 if created via the public /quick flow
+    -- Telegram id (string) stamped when an Android-app instance is claimed;
+    -- lets the server reuse (not duplicate) a still-live instance on reconnect
+    -- for the same Telegram user. NULL for non-app flows and pre-claim temps.
+    app_session  TEXT,
     FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
     FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
 );
@@ -132,6 +136,11 @@ class Database:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN output_link TEXT")
         if "is_quick" not in columns:
             await self._conn.execute("ALTER TABLE instances ADD COLUMN is_quick INTEGER NOT NULL DEFAULT 0")
+        # Migration: add app_session column (Telegram id of the claiming user) so
+        # the Android-app flow can reuse a still-live instance on reconnect
+        # instead of spawning a duplicate. Nullable; safe to re-run.
+        if "app_session" not in columns:
+            await self._conn.execute("ALTER TABLE instances ADD COLUMN app_session TEXT")
         # Migration: add password_must_change column if missing.
         rows = await self._conn.execute_fetchall("PRAGMA table_info(users)")
         user_columns = [row[1] for row in rows]
