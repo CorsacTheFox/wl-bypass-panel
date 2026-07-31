@@ -50,6 +50,16 @@ QUICK_MAX_CONCURRENT = int(os.getenv("WB_QUICK_MAX_CONCURRENT", "5"))
 # set. 0 = use the first enabled service.
 QUICK_DEFAULT_SERVICE_ID = int(os.getenv("WB_QUICK_DEFAULT_SERVICE_ID", "0"))
 
+# Android app API (/api/app/*): a standalone instance-creation flow separate
+# from /quick. The app authenticates every request with this static token via
+# the X-App-Token header. When empty (default), the whole /api/app router is
+# disabled (returns 404), mirroring the QUICK_TOKEN / TELEGRAM_BOT_TOKEN gating.
+APP_TOKEN = os.getenv("WB_APP_TOKEN", "")
+# Lifetime of an unauthenticated (temporary) instance created by the Android
+# app, in seconds. This window lets the user complete Telegram authorization
+# while the spawned service is already running. Default 600s = 10 minutes.
+APP_TEMP_TIMEOUT = int(os.getenv("WB_APP_TEMP_TIMEOUT", "600"))
+
 # Telegram Mini App (WebApp) authorization.
 # Set to the bot token obtained from BotFather to enable Telegram login.
 # When empty (default), POST /api/auth/telegram is disabled (returns 404),

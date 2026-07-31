@@ -1,0 +1,365 @@
+openapi: 3.0.3
+info:
+  title: Whitelist-Bypass — Android App API
+  version: "1.0"
+  description: |
+    Standalone instance-creation API for the Android client (`/api/app/*`),
+    plus the Telegram login endpoint it depends on (`/api/auth/telegram`).
+
+    ## Lifecycle
+    Every app connection creates a **temporary** instance (10-minute window by
+    default) so an unauthenticated user can authorize inside the spawned
+    service. Once the user completes Telegram authentication (or immediately,
+    if already authenticated), the app *claims* the instance: ownership
+    transfers to the real user, the running process is kept, and the timeout is
+    reset to the full lifetime. The app explicitly stops the instance on
+    disconnect.
+
+    ## Authentication
+    * **App token** (`AppToken` security scheme): every `/api/app/*` request
+      must carry the shared static secret in the `X-App-Token` header
+      (`WB_APP_TOKEN` on the server). If unset on the server, the whole router
+      returns `404`.
+    * **Telegram initData**: supplied in the claim-request body; on success the
+      server returns a normal bearer session token.
+    * **Bearer token** (`BearerAuth`): the session token returned by claim, used
+      as `Authorization: Bearer <token>` for any subsequent authenticated call.
+servers:
+  - url: https://your-domain.example.com
+    description: Production base URL (replace with your deployment)
+tags:
+  - name: android
+    description: Standalone Android instance-creation flow
+  - name: auth
+    description: Telegram WebApp authorization
+
+paths:
+  /api/app/health:
+    get:
+      tags: [android]
+      summary: App readiness probe
+      description: |
+        Reports whether Telegram login is configured and whether any enabled
+        service exists. Returns `404` if the app API is disabled (`WB_APP_TOKEN`
+        unset); otherwise always `200`.
+      security:
+        - AppToken: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/Disabled"
+
+  /api/app/instances:
+    post:
+      tags: [android]
+      summary: Create a temporary instance
+      description: |
+        Starts a short-lived instance (default 600s) under the admin account.
+        Returns a one-time `claim_token` used later to transfer the instance to
+        the authenticated user. Subject to the global quick-session cap
+        (`WB_QUICK_MAX_CONCURRENT`).
+      security:
+        - AppToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInstanceIn"
+      responses:
+        "201":
+          description: Temporary instance created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateInstanceOut"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NoService" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "429": { $ref: "#/components/responses/LimitReached" }
+
+  /api/app/instances/{instance_id}/claim:
+    post:
+      tags: [android]
+      summary: Claim a temp instance for the authenticated user
+      description: |
+        Validates the Telegram WebApp `initData`, resolves (or creates) the
+        local user, reassigns the instance to them, clears the temporary flag
+        and resets the timeout to the full lifetime (`WB_DEFAULT_TIMEOUT_SECONDS`,
+        default 1h). The running process is **not** restarted, so any
+        authorization the user did inside the spawned service is preserved.
+        Returns a session token to use for subsequent authenticated calls.
+      security:
+        - AppToken: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimIn"
+      responses:
+        "200":
+          description: Instance claimed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimOut"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Instance / token mismatch, or Telegram auth disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Instance already claimed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: Instance already ended (stopped/exited/crashed/timeout)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/app/instances/{instance_id}:
+    get:
+      tags: [android]
+      summary: Poll instance status and output_link
+      description: Lightweight poll usable both before and after claim.
+      security:
+        - AppToken: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: Current state
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstanceState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Instance not found (or app API disabled)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [android]
+      summary: Stop an instance (app disconnect)
+      description: |
+        Idempotent stop. For a temporary (pre-claim) instance, the request body
+        must carry the matching `claim_token`. After claim, the app may stop via
+        the bearer-authenticated client API instead.
+      security:
+        - AppToken: []
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StopIn" }
+      responses:
+        "200":
+          description: Stopped (or was already terminal)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StopOut" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: claim_token required to stop a temp instance
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Instance not found
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/auth/telegram:
+    post:
+      tags: [auth]
+      summary: Telegram WebApp login (standalone)
+      description: |
+        Validates the Telegram WebApp `initData` and issues an opaque bearer
+        session token. Returns `404` when `WB_TELEGRAM_BOT_TOKEN` is unset. The
+        Android claim flow does not call this directly (claim validates initData
+        internally), but it is the standard entry point for re-establishing a
+        stored session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TelegramLoginIn" }
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LoginOut" }
+        "401":
+          description: initData invalid or expired
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: Telegram auth disabled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+components:
+  securitySchemes:
+    AppToken:
+      type: apiKey
+      in: header
+      name: X-App-Token
+      description: Shared static secret (`WB_APP_TOKEN`).
+    BearerAuth:
+      type: http
+      scheme: bearer
+      description: Session token returned by claim/login.
+
+  parameters:
+    InstanceId:
+      name: instance_id
+      in: path
+      required: true
+      schema: { type: integer }
+
+  responses:
+    BadRequest:
+      description: Malformed request (e.g. service disabled)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing/invalid X-App-Token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Disabled:
+      description: App API disabled (WB_APP_TOKEN unset)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NoService:
+      description: No enabled service available
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    LimitReached:
+      description: Global quick-session cap reached
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
+
+    Health:
+      type: object
+      properties:
+        ok: { type: boolean, example: true }
+        telegram_enabled: { type: boolean, example: true }
+        service_available: { type: boolean, example: true }
+
+    CreateInstanceIn:
+      type: object
+      properties:
+        service_id:
+          type: integer
+          nullable: true
+          description: Optional explicit service id. Omit to use the configured quick service.
+
+    CreateInstanceOut:
+      type: object
+      required: [instance_id, claim_token, status]
+      properties:
+        instance_id: { type: integer, example: 42 }
+        claim_token: { type: string, example: "x3k9...token-urlsafe" }
+        status: { type: string, example: "pending" }
+        output_link: { type: string, nullable: true, example: "wbstream://abc" }
+        service_name: { type: string, nullable: true, example: "Service A" }
+        temp_expires_at: { type: string, nullable: true, example: "2026-07-31T12:10:00+00:00" }
+        temp_ttl_seconds: { type: integer, example: 600 }
+
+    ClaimIn:
+      type: object
+      required: [telegram_init_data, claim_token]
+      properties:
+        telegram_init_data:
+          type: string
+          description: Raw Telegram WebApp initData string.
+        claim_token:
+          type: string
+          description: The token returned by the create step.
+
+    ClaimOut:
+      type: object
+      required: [instance_id, user_id, token, role, username]
+      properties:
+        instance_id: { type: integer, example: 42 }
+        user_id: { type: integer, example: 7 }
+        token: { type: string, example: "bearer-session-token" }
+        role: { type: string, example: "client" }
+        username: { type: string, example: "tg_123456" }
+        status: { type: string, example: "running" }
+        output_link: { type: string, nullable: true, example: "wbstream://abc" }
+        expires_at: { type: string, example: "2026-07-31T13:00:00+00:00" }
+
+    InstanceState:
+      type: object
+      properties:
+        id: { type: integer, example: 42 }
+        user_id: { type: integer, example: 1 }
+        status:
+          type: string
+          enum: [pending, running, stopping, stopped, exited, crashed, timeout]
+        output_link: { type: string, nullable: true, example: "wbstream://abc" }
+        error: { type: string, nullable: true }
+        timeout_at: { type: string, nullable: true }
+        is_quick: { type: boolean, example: true }
+        service_name: { type: string, nullable: true, example: "Service A" }
+
+    StopIn:
+      type: object
+      properties:
+        claim_token:
+          type: string
+          nullable: true
+          description: Required to stop a temp (pre-claim) instance.
+
+    StopOut:
+      type: object
+      properties:
+        ok: { type: boolean, example: true }
+        instance: { $ref: "#/components/schemas/InstanceState" }
+
+    TelegramLoginIn:
+      type: object
+      required: [initData]
+      properties:
+        initData: { type: string }
+
+    LoginOut:
+      type: object
+      properties:
+        token: { type: string, example: "bearer-session-token" }
+        role: { type: string, example: "client" }
+        username: { type: string, example: "tg_123456" }
+        must_change_password: { type: boolean, example: false }

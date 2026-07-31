@@ -555,6 +555,24 @@ class ProcessManager:
             if tracked:
                 tracked.kill_task = task
 
+    async def reschedule_timeout(self, instance_id: int, delay: float) -> None:
+        """Cancel any pending timeout killer for *instance_id* and arm a new one.
+
+        Used when an Android-app temp instance is claimed by a user: the short
+        temporary timer is cancelled and replaced with the full-lifetime timer.
+        The caller is responsible for updating ``instances.timeout_at`` in the
+        DB to match *delay*. If the instance is no longer tracked (already
+        terminal) this is a no-op.
+        """
+        async with self._lock:
+            tracked = self._tracked.get(instance_id)
+            if tracked is None:
+                return
+            if tracked.kill_task is not None:
+                tracked.kill_task.cancel()
+                tracked.kill_task = None
+        await self.schedule_timeout(instance_id, delay)
+
     async def _timeout_killer(self, instance_id: int, delay: float) -> None:
         try:
             await asyncio.sleep(delay)

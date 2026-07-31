@@ -15,7 +15,7 @@ from urllib.parse import parse_qsl
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from config import PBKDF2_ITERATIONS, SESSION_TTL_SECONDS
+from config import APP_TOKEN, PBKDF2_ITERATIONS, SESSION_TTL_SECONDS
 from db import db
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -218,6 +218,30 @@ async def require_client(
 ) -> dict:
     """Any authenticated, enabled user (clients & admin)."""
     return user
+
+
+async def verify_app_token(request: Request) -> None:
+    """Gate the Android-app (/api/app/*) endpoints with a static shared token.
+
+    The Android client sends the configured ``WB_APP_TOKEN`` value in the
+    ``X-App-Token`` header. When ``APP_TOKEN`` is empty the whole router is
+    considered disabled and returns 404 (mirroring the QUICK_TOKEN /
+    TELEGRAM_BOT_TOKEN gating). A missing/non-matching token yields 401.
+
+    Comparison is constant-time via :func:`hmac.compare_digest`.
+    """
+    if not APP_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Android app API disabled",
+        )
+    supplied = request.headers.get("x-app-token", "")
+    if not supplied or not hmac.compare_digest(supplied, APP_TOKEN):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid app token",
+            headers={"WWW-Authenticate": "X-App-Token"},
+        )
 
 
 def request_token(request: Request) -> str | None:

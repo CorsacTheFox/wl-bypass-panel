@@ -24,6 +24,7 @@ from config import ADMIN_PASSWORD, ADMIN_USERNAME, BASE_DIR, ensure_dirs
 from db import db
 from process_manager import process_manager
 from routers import admin as admin_router
+from routers import app as app_router
 from routers import auth as auth_router
 from routers import client as client_router
 from routers import quick as quick_router
@@ -114,6 +115,7 @@ app.include_router(telegram_router.router)
 app.include_router(admin_router.router)
 app.include_router(client_router.router)
 app.include_router(quick_router.router)
+app.include_router(app_router.router)
 
 # Static assets (CSS/JS)
 if STATIC_DIR.exists():
