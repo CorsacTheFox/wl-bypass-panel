@@ -32,6 +32,8 @@ from pydantic import BaseModel
 from config import (
     APP_TEMP_TIMEOUT,
     DEFAULT_TIMEOUT_SECONDS,
+    HEARTBEAT_EXTENSION_SECONDS,
+    HEARTBEAT_MAX_SECONDS,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_INIT_DATA_MAX_AGE,
 )
@@ -41,6 +43,7 @@ from routers.quick import _quick_active_count, _resolve_quick_service
 from security import (
     TelegramAuthError,
     create_session,
+    get_current_user,
     validate_telegram_init_data,
     verify_app_token,
 )
@@ -65,6 +68,27 @@ _claim_tokens: dict[str, int] = {}
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+async def _extend(instance_id: int, add_seconds: int, cap_seconds: int) -> str | None:
+    """Extend an instance's lifetime by *add_seconds*, capped *cap_seconds* from now.
+
+    Computes the new deadline as ``min(now + add_seconds, now + cap_seconds)``,
+    persists it to ``instances.timeout_at`` and re-arms the in-process timeout
+    killer via :func:`process_manager.reschedule_timeout`. Returns the new
+    deadline ISO string, or None if the instance is no longer tracked (already
+    terminal/reaped). The cap prevents a perpetually-heartbeating client from
+    keeping an instance alive indefinitely.
+    """
+    now = _now_utc()
+    new_remaining = min(add_seconds, cap_seconds)
+    new_timeout_at = (now + timedelta(seconds=new_remaining)).isoformat()
+    await db.execute(
+        "UPDATE instances SET timeout_at=? WHERE id=? AND status IN ('pending','running','stopping')",
+        (new_timeout_at, instance_id),
+    )
+    await process_manager.reschedule_timeout(instance_id, float(new_remaining))
+    return new_timeout_at
 
 
 class CreateInstanceIn(BaseModel):
@@ -96,27 +120,6 @@ async def _get_instance_row(instance_id: int) -> dict | None:
              FROM instances i JOIN services s ON s.id = i.service_id
             WHERE i.id=?""",
         (instance_id,),
-    )
-    return dict(row) if row else None
-
-
-async def _live_owned_instance(user_id: int) -> dict | None:
-    """A claimed (non-quick), live instance currently owned by *user_id*.
-
-    Used by the claim flow to detect reconnects (improper disconnect where the
-    process is still running) so the existing instance is reused instead of
-    spawning a duplicate. Returns the most recent matching row, or None.
-    """
-    row = await db.fetchone(
-        """SELECT i.id, i.user_id, i.service_id, s.name AS service_name,
-                  i.pid, i.status, i.started_at, i.ended_at, i.exit_code,
-                  i.error, i.timeout_at, i.output_link, i.is_quick
-             FROM instances i JOIN services s ON s.id = i.service_id
-            WHERE i.user_id=? AND i.is_quick=0
-              AND i.status IN ('pending','running','stopping')
-            ORDER BY i.id DESC
-            LIMIT 1""",
-        (user_id,),
     )
     return dict(row) if row else None
 
@@ -212,29 +215,25 @@ async def create_temp_instance(body: CreateInstanceIn):
 
 @router.post("/instances/{instance_id}/claim")
 async def claim_instance(instance_id: int, body: ClaimIn):
-    """Transfer a temp instance to the authenticated user and extend its lifetime.
+    """Transfer a temp instance to the authenticated user.
 
     Validates the Telegram WebApp ``initData``, resolves (or creates) the local
     user, reassigns the instance to them, clears the ``is_quick`` flag and
-    resets the timeout to the full lifetime (``WB_DEFAULT_TIMEOUT_SECONDS``).
-    The running process is *not* restarted, so any authorization the user did
-    inside the spawned service is preserved.
+    resets the timeout to the default lifetime (``WB_DEFAULT_TIMEOUT_SECONDS``,
+    5 min). The running process is *not* restarted, so any authorization the
+    user did inside the spawned service is preserved. The caller then keeps the
+    instance alive beyond 5 min via the heartbeat endpoint.
 
-    Permission: anyone may spawn a short temp instance, but converting it into a
-    full-lifetime owned instance requires the instance-creation privilege
-    (``users.can_create_instances``); admins always pass. This mirrors the gate
-    the regular client flow enforces in ``instance_service.start``.
-
-    Reconnect handling: if the user already owns a *live* (claimed) instance —
-    e.g. from an improper disconnect where the process is still running — that
-    instance is returned instead (with a fresh session token) and the new temp
-    instance is stopped. This prevents accumulating duplicate instances.
+    Permission: anyone may spawn a short temp instance, but claiming it (which
+    grants the ability to heartbeat/extend) requires the instance-creation
+    privilege (``users.can_create_instances``); admins always pass. Guests with
+    no privilege are refused here and their temp instance expires at 5 min.
 
     Returns the user's session token (use it as ``Authorization: Bearer`` for
-    subsequent calls) plus the now-permanent ``output_link``.
+    subsequent calls, including heartbeat) plus the ``output_link``.
 
     Errors: 401 bad initData, 403 instance creation disabled, 404 instance/token
-    mismatch, 410 instance gone.
+    mismatch, 409 already claimed, 410 instance gone.
     """
     if not TELEGRAM_BOT_TOKEN:
         raise HTTPException(
@@ -276,11 +275,11 @@ async def claim_instance(instance_id: int, body: ClaimIn):
         tg_user["id"], tg_user.get("username")
     )
 
-    # 3. privilege gate — temp (10 min) instances are open, but converting one
-    # into a full-lifetime (6h) owned instance requires the creation privilege.
+    # 3. privilege gate — temp instances are open, but claiming one (and thus
+    # gaining the ability to heartbeat/extend its lifetime) requires the
+    # creation privilege. Guests are refused and their temp instance expires at
+    # its 5-min TTL.
     if user["role"] != "admin" and not user.get("can_create_instances"):
-        # consume the token so the rejected temp instance can't be retried, then
-        # stop it so it doesn't occupy a quick slot for its 10-min TTL.
         _claim_tokens.pop(body.claim_token, None)
         await process_manager.stop(instance_id)
         raise HTTPException(
@@ -288,27 +287,7 @@ async def claim_instance(instance_id: int, body: ClaimIn):
             detail="Instance creation is disabled for this account",
         )
 
-    # 4. reconnect handling — if the user already owns a live claimed instance,
-    # reuse it instead of creating a duplicate. Stop the freshly spawned temp
-    # instance and hand back the existing one with a new session token.
-    existing = await _live_owned_instance(user["id"])
-    if existing is not None and existing["id"] != instance_id:
-        _claim_tokens.pop(body.claim_token, None)
-        await process_manager.stop(instance_id)
-        token = await create_session(user["id"])
-        return {
-            "instance_id": existing["id"],
-            "user_id": user["id"],
-            "token": token,
-            "role": user["role"],
-            "username": user["username"],
-            "status": existing["status"],
-            "output_link": existing.get("output_link"),
-            "expires_at": existing.get("timeout_at"),
-            "reused": True,
-        }
-
-    # 5. transfer ownership + reset the timeout to the full lifetime.
+    # 4. transfer ownership + reset the timeout to the default (5 min) lifetime.
     new_timeout_at = (_now_utc() + timedelta(seconds=DEFAULT_TIMEOUT_SECONDS)).isoformat()
     await db.execute(
         "UPDATE instances SET user_id=?, is_quick=0, timeout_at=? WHERE id=?",
@@ -329,6 +308,52 @@ async def claim_instance(instance_id: int, body: ClaimIn):
         "username": user["username"],
         "status": row["status"],
         "output_link": row.get("output_link"),
+        "expires_at": new_timeout_at,
+    }
+
+
+@router.post("/instances/{instance_id}/heartbeat")
+async def heartbeat_instance(instance_id: int, user=Depends(get_current_user)):
+    """Extend a claimed instance's lifetime (authenticated clients only).
+
+    Each heartbeat adds ``WB_HEARTBEAT_EXT`` seconds (default 300) to the
+    instance's remaining lifetime, capped at ``WB_HEARTBEAT_MAX`` (default 4h)
+    from now. This is the mechanism by which an authenticated user keeps a
+    session alive beyond the 5-minute default: as long as the app keeps
+    pinging while there is user activity, the instance is repeatedly extended.
+
+    Authorization is bearer-based (``Authorization: Bearer <token>``), so it is
+    only reachable *after* a successful claim — i.e. only authenticated,
+    privileged users can extend. Guests (pre-claim temp instances owned by the
+    admin account) cannot satisfy the ownership check and are refused.
+
+    Errors: 401 bad/missing bearer, 403 not the owner, 404 unknown instance,
+    410 instance already ended.
+    """
+    row = await _get_instance_row(instance_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+
+    # Ownership: only the instance's owner may extend it. A pre-claim temp
+    # instance is owned by user_id=1 (admin) but the caller here is a real
+    # authenticated user, so this also naturally blocks heartbeating a temp
+    # (guest) instance.
+    if row["user_id"] != user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="not the instance owner"
+        )
+    if row["status"] in ("stopped", "exited", "crashed", "timeout"):
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail=f"instance already ended ({row['status']})",
+        )
+
+    new_timeout_at = await _extend(
+        instance_id, HEARTBEAT_EXTENSION_SECONDS, HEARTBEAT_MAX_SECONDS
+    )
+    return {
+        "ok": True,
+        "instance_id": instance_id,
         "expires_at": new_timeout_at,
     }
 

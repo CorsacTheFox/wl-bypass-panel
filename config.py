@@ -34,7 +34,7 @@ PORT = int(os.getenv("WB_PORT", "8000"))
 
 # Process / business policy
 DEFAULT_MAX_CONCURRENT = int(os.getenv("WB_DEFAULT_MAX_CONCURRENT", "3"))
-DEFAULT_TIMEOUT_SECONDS = int(os.getenv("WB_DEFAULT_TIMEOUT_SECONDS", "21600"))  # 6h
+DEFAULT_TIMEOUT_SECONDS = int(os.getenv("WB_DEFAULT_TIMEOUT_SECONDS", "300"))  # 5 min
 PROCESS_KILL_GRACE_SECONDS = float(os.getenv("WB_KILL_GRACE_SECONDS", "5"))
 REAPER_INTERVAL_SECONDS = float(os.getenv("WB_REAPER_INTERVAL", "2"))
 
@@ -57,10 +57,18 @@ QUICK_DEFAULT_SERVICE_ID = int(os.getenv("WB_QUICK_DEFAULT_SERVICE_ID", "0"))
 APP_TOKEN = os.getenv("WB_APP_TOKEN", "")
 # Lifetime of an unauthenticated (temporary) instance created by the Android
 # app, in seconds. This window lets the user complete Telegram authorization
-# while the spawned service is already running. Default 600s = 10 minutes.
-APP_TEMP_TIMEOUT = int(os.getenv("WB_APP_TEMP_TIMEOUT", "600"))
+# while the spawned service is already running. Default 300s = 5 minutes
+# (matches the global 5-minute default; only authenticated users extend beyond
+# it via the heartbeat endpoint).
+APP_TEMP_TIMEOUT = int(os.getenv("WB_APP_TEMP_TIMEOUT", "300"))
 
-# Telegram Mini App (WebApp) authorization.
+# Heartbeat auto-extension for claimed instances. Each heartbeat from an
+# authenticated client adds HEARTBEAT_EXTENSION_SECONDS to the instance's
+# remaining lifetime, but never beyond HEARTBEAT_MAX_SECONDS from now (a hard
+# ceiling so a perpetually-heartbeating client can't keep an instance alive
+# indefinitely). Guests (pre-claim temp instances) cannot heartbeat.
+HEARTBEAT_EXTENSION_SECONDS = int(os.getenv("WB_HEARTBEAT_EXT", "300"))   # +5 min / beat
+HEARTBEAT_MAX_SECONDS = int(os.getenv("WB_HEARTBEAT_MAX", str(4 * 3600)))  # 4h ceiling
 # Set to the bot token obtained from BotFather to enable Telegram login.
 # When empty (default), POST /api/auth/telegram is disabled (returns 404),
 # mirroring the QUICK_TOKEN gating pattern.
