@@ -36,10 +36,23 @@
     }
     h1 { color: #fff; font-size: 1.2rem; font-weight: 600; margin: 0 0 .5rem; }
     .sub { color: #6b7280; font-size: .82rem; margin: 0 0 1.5rem; line-height: 1.5; }
+
+    .spinner {
+      width: 30px; height: 30px;
+      border: 3px solid rgba(255, 255, 255, 0.12);
+      border-top-color: #7c3aed;
+      border-radius: 50%;
+      margin: 0 auto 1.1rem;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
     .state-line { color: #9ca3af; font-size: .82rem; margin: 0 0 1.25rem; }
     .error .logo { background: #b91c1c; box-shadow: 0 10px 28px rgba(185, 28, 28, 0.25); }
     .error h1 { margin-bottom: .35rem; }
+
     .hidden { display: none !important; }
+
     .btn-action {
       display: inline-block;
       width: 100%;
@@ -64,18 +77,20 @@
 <body>
   <div class="wrap">
     <div class="card" id="card">
-      <div class="logo">
+      <div class="logo" id="logo">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
         </svg>
       </div>
 
+      <!-- Loading / redirecting state -->
       <div id="view-loading">
         <h1>Authorize Cors.Connect</h1>
-        <p class="sub">Tap the button below to complete sign-in and return to the app.</p>
-        <button id="btn-return" class="btn-action">Continue to Cors.Connect</button>
+        <p class="sub">Tap the button below to complete authorization and return to app.</p>
+        <button id="btn-return" class="btn-action">Return to App</button>
       </div>
 
+      <!-- Error state -->
       <div id="view-error" class="error hidden">
         <h1 id="error-title">Open in Telegram</h1>
         <p class="sub" id="error-message">This page only works inside the Telegram app.</p>
@@ -85,11 +100,11 @@
   </div>
 
   <script>
-  (function () {
+    (function () {
       "use strict";
 
-      // Используем HTTPS хост, прописанный в AndroidManifest.xml
-      var APP_HOST = "https://alpha.cors-fox.cc/tginit";
+      // Важно: Полноценная HTTPS ссылка для Android App Links (чтобы WebView не бросал ошибки)
+      var HTTPS_HOST = "https://alpha.cors-fox.cc/tginit";
       var PARAM = "initdata";
 
       var loadingView = document.getElementById("view-loading");
@@ -99,88 +114,96 @@
       var btnReturn = document.getElementById("btn-return");
 
       function showError(title, message) {
-          loadingView.classList.add("hidden");
-          errorView.classList.remove("hidden");
-          if (title) errorTitle.textContent = title;
-          if (message) errorMessage.textContent = message;
+        loadingView.classList.add("hidden");
+        errorView.classList.remove("hidden");
+        if (title) errorTitle.textContent = title;
+        if (message) errorMessage.textContent = message;
       }
 
       function looksLikeInitData(s) {
-          if (!s || typeof s !== "string") return false;
-          if (s.indexOf("hash=") === -1) return false;
-
-          return (
-              s.indexOf("auth_date=") !== -1 ||
-              s.indexOf("query_id=") !== -1 ||
-              s.indexOf("user=") !== -1
-          );
+        if (!s || typeof s !== "string") return false;
+        if (s.indexOf("hash=") === -1) return false;
+        return (
+          s.indexOf("auth_date=") !== -1 ||
+          s.indexOf("query_id=") !== -1 ||
+          s.indexOf("user=") !== -1
+        );
       }
 
       function readInitData() {
-          try {
-              var wa = window.Telegram && window.Telegram.WebApp;
-              if (wa && wa.initData) return wa.initData;
-          } catch (e) {}
+        try {
+          var waInit = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData;
+          if (waInit) return waInit;
+        } catch (e) {}
 
-          try {
-              var url = new URL(window.location.href.replace("#", "?"));
-              var data = url.searchParams.get("tgWebAppData");
-              if (data) return data;
-          } catch (e) {}
-
-          return "";
+        try {
+          var loc = window.location.href;
+          var fromHash = new URL(loc.replace("#", "?"));
+          var v = fromHash.searchParams.get("tgWebAppData");
+          if (v) return v;
+        } catch (e) {}
+        return "";
       }
 
-      function setupClick(initData) {
-          var encoded = encodeURIComponent(initData);
-          var targetUrl = APP_HOST + "?" + PARAM + "=" + encoded;
+      function deliverInitData(initData) {
+        var wa = window.Telegram && window.Telegram.WebApp;
+        
+        // ВАЖНОЕ ИСПРАВЛЕНИЕ:
+        // Передаём сырой initData в параметр, НЕ оборачивая повторно в encodeURIComponent,
+        // так как Telegram WebApp API или openLink сделает это сам при вызове intent.
+        var targetUrl = HTTPS_HOST + "?" + PARAM + "=" + encodeURIComponent(initData);
 
-          btnReturn.addEventListener("click", function () {
-              var wa = window.Telegram && window.Telegram.WebApp;
+        var doRedirect = function () {
+          if (wa && typeof wa.openLink === "function") {
+            try {
+              wa.openLink(targetUrl, { try_instant_view: false });
+            } catch (e) {
+              window.location.href = targetUrl;
+            }
+          } else {
+            window.location.href = targetUrl;
+          }
 
-              // openLink с https:// корректно выведет пользователю системный промпт или сразу откроет App
-              if (wa && typeof wa.openLink === "function") {
-                  wa.openLink(targetUrl, { try_instant_view: false });
-              } else {
-                  window.location.href = targetUrl;
-              }
+          // Даем 1 секунду Android перехватить Intent перед закрытием WebView
+          setTimeout(function () {
+            try {
+              if (wa && typeof wa.close === "function") wa.close();
+            } catch (e) {}
+          }, 1000);
+        };
 
-              setTimeout(function () {
-                  try {
-                      if (wa && typeof wa.close === "function") wa.close();
-                  } catch (e) {}
-              }, 1000);
-          });
+        // Слушатель по клику
+        btnReturn.addEventListener("click", doRedirect);
+
+        // Авто-клик через 400ms для удобства
+        setTimeout(doRedirect, 400);
       }
 
       function start() {
-          try {
-              var wa = window.Telegram && window.Telegram.WebApp;
-              if (wa) {
-                  if (typeof wa.ready === "function") wa.ready();
-                  if (typeof wa.expand === "function") wa.expand();
-              }
-          } catch (e) {}
-
-          var initData = readInitData();
-
-          if (!looksLikeInitData(initData)) {
-              showError(
-                  "Open in Telegram",
-                  "This page only works inside the Telegram app."
-              );
-              return;
+        try {
+          var wa = window.Telegram && window.Telegram.WebApp;
+          if (wa) {
+            if (typeof wa.ready === "function") wa.ready();
+            if (typeof wa.expand === "function") wa.expand();
           }
+        } catch (e) {}
 
-          setupClick(initData);
+        var initData = readInitData();
+
+        if (!looksLikeInitData(initData)) {
+          showError("Open in Telegram", "This page only works inside the Telegram app.");
+          return;
+        }
+
+        deliverInitData(initData);
       }
 
       if (document.readyState === "loading") {
-          document.addEventListener("DOMContentLoaded", start);
+        document.addEventListener("DOMContentLoaded", start);
       } else {
-          start();
+        start();
       }
-  })();
+    })();
   </script>
 </body>
 </html>
