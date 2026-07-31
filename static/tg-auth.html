@@ -1,199 +1,142 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-  <title>Authorizing Cors.Connect…</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; }
-    html, body { height: 100%; }
-    body {
-      margin: 0;
-      font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      background: #08080a;
-      color: #d1d5db;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.25rem;
-    }
-    .wrap { width: 100%; max-width: 26rem; }
-    .card {
-      background: #14141a;
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 18px;
-      padding: 2.25rem 1.75rem;
-      text-align: center;
-    }
-    .logo {
-      width: 3.25rem; height: 3.25rem; border-radius: 14px;
-      background: #7c3aed;
-      display: flex; align-items: center; justify-content: center;
-      margin: 0 auto 1.35rem;
-      box-shadow: 0 10px 28px rgba(124, 58, 237, 0.28);
-    }
-    h1 { color: #fff; font-size: 1.2rem; font-weight: 600; margin: 0 0 .5rem; }
-    .sub { color: #6b7280; font-size: .82rem; margin: 0 0 1.5rem; line-height: 1.5; }
-    .state-line { color: #9ca3af; font-size: .82rem; margin: 0 0 1.25rem; }
-    .error .logo { background: #b91c1c; box-shadow: 0 10px 28px rgba(185, 28, 28, 0.25); }
-    .error h1 { margin-bottom: .35rem; }
-    .hidden { display: none !important; }
-    .btn-action {
-      display: inline-block;
-      width: 100%;
-      padding: 0.9rem 1.25rem;
-      background: #7c3aed;
-      color: #ffffff;
-      font-size: 0.95rem;
-      font-weight: 600;
-      border: none;
-      border-radius: 12px;
-      cursor: pointer;
-      text-decoration: none;
-      box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35);
-      transition: background 0.15s ease, transform 0.15s ease;
-    }
-    .btn-action:active {
-      background: #6d28d9;
-      transform: scale(0.98);
-    }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card" id="card">
-      <div class="logo">
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-        </svg>
-      </div>
+<script>
+(function () {
+    "use strict";
 
-      <div id="view-loading">
-        <h1>Authorize Cors.Connect</h1>
-        <p class="sub">Tap the button below to complete sign-in and return to the app.</p>
-        <button id="btn-return" class="btn-action">Continue to Cors.Connect</button>
-      </div>
+    var SCHEME = "corsconnect";
+    var HOST = "tginit";
+    var PARAM = "initdata";
+    var ANDROID_PACKAGE_NAME = "cc.cors.connect";
 
-      <div id="view-error" class="error hidden">
-        <h1 id="error-title">Open in Telegram</h1>
-        <p class="sub" id="error-message">This page only works inside the Telegram app.</p>
-        <p class="state-line">Open <strong>@wl_cors_bot</strong> from Telegram to sign in.</p>
-      </div>
-    </div>
-  </div>
+    var loadingView = document.getElementById("view-loading");
+    var errorView = document.getElementById("view-error");
+    var errorTitle = document.getElementById("error-title");
+    var errorMessage = document.getElementById("error-message");
+    var btnReturn = document.getElementById("btn-return");
 
-  <script>
-    (function () {
-      "use strict";
-
-      var SCHEME = "corsconnect";
-      var HOST = "tginit";
-      var PARAM = "initdata";
-      var ANDROID_PACKAGE_NAME = "com.corsconnect.app"; // Укажите реальный applicationId из build.gradle
-
-      var loadingView = document.getElementById("view-loading");
-      var errorView = document.getElementById("view-error");
-      var errorTitle = document.getElementById("error-title");
-      var errorMessage = document.getElementById("error-message");
-      var btnReturn = document.getElementById("btn-return");
-
-      function showError(title, message) {
+    function showError(title, message) {
         loadingView.classList.add("hidden");
         errorView.classList.remove("hidden");
         if (title) errorTitle.textContent = title;
         if (message) errorMessage.textContent = message;
-      }
+    }
 
-      function looksLikeInitData(s) {
+    function looksLikeInitData(s) {
         if (!s || typeof s !== "string") return false;
         if (s.indexOf("hash=") === -1) return false;
+
         return (
-          s.indexOf("auth_date=") !== -1 ||
-          s.indexOf("query_id=") !== -1 ||
-          s.indexOf("user=") !== -1
+            s.indexOf("auth_date=") !== -1 ||
+            s.indexOf("query_id=") !== -1 ||
+            s.indexOf("user=") !== -1
         );
-      }
+    }
 
-      function readInitData() {
+    function readInitData() {
         try {
-          var waInit = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData;
-          if (waInit) return waInit;
+            var wa = window.Telegram && window.Telegram.WebApp;
+            if (wa && wa.initData)
+                return wa.initData;
         } catch (e) {}
 
         try {
-          var loc = window.location.href;
-          var fromHash = new URL(loc.replace("#", "?"));
-          var v = fromHash.searchParams.get("tgWebAppData");
-          if (v) return v;
+            var url = new URL(window.location.href.replace("#", "?"));
+            var data = url.searchParams.get("tgWebAppData");
+            if (data)
+                return data;
         } catch (e) {}
+
         return "";
-      }
+    }
 
-      function setupClick(initData) {
-        var encodedData = encodeURIComponent(initData);
-        var customSchemeUrl = SCHEME + "://" + HOST + "?" + PARAM + "=" + encodedData;
+    function setupClick(initData) {
 
-        // Явный Android Intent URL с принудительной указанием scheme и package
-        var intentUrl = "intent://" + HOST + "?" + PARAM + "=" + encodedData +
-          "#Intent;scheme=" + SCHEME + 
-          ";package=" + ANDROID_PACKAGE_NAME + 
-          ";action=android.intent.action.VIEW;end";
+        var encoded = encodeURIComponent(initData);
+
+        var customUrl =
+            SCHEME +
+            "://" +
+            HOST +
+            "?" +
+            PARAM +
+            "=" +
+            encoded;
+
+        var intentUrl =
+            "intent://" +
+            HOST +
+            "?" +
+            PARAM +
+            "=" +
+            encoded +
+            "#Intent;" +
+            "scheme=" +
+            SCHEME +
+            ";" +
+            "package=" +
+            ANDROID_PACKAGE_NAME +
+            ";" +
+            "end";
 
         btnReturn.addEventListener("click", function () {
-          var wa = window.Telegram && window.Telegram.WebApp;
-          var isAndroid = /android/i.test(navigator.userAgent);
 
-          if (isAndroid) {
-            // Для Android переход по intent:// с package пробивает WebView Telegram
-            window.location.href = intentUrl;
-          } else {
-            // Для iOS / Desktop открываем через WebApp SDK
-            if (wa && typeof wa.openLink === "function") {
-              try {
-                wa.openLink(customSchemeUrl);
-              } catch (e) {
-                window.location.href = customSchemeUrl;
-              }
+            var isAndroid = /android/i.test(navigator.userAgent);
+
+            if (isAndroid) {
+
+                window.location.href = customUrl;
+
+                setTimeout(function () {
+                    window.location.href = intentUrl;
+                }, 700);
+
             } else {
-              window.location.href = customSchemeUrl;
+
+                window.location.href = customUrl;
             }
-          }
 
-          setTimeout(function () {
-            try {
-              if (wa && typeof wa.close === "function") wa.close();
-            } catch (e) {}
-          }, 1500);
+            setTimeout(function () {
+                try {
+                    var wa = window.Telegram && window.Telegram.WebApp;
+                    if (wa && typeof wa.close === "function")
+                        wa.close();
+                } catch (e) {}
+            }, 1500);
         });
-      }
+    }
 
-      function start() {
+    function start() {
+
         try {
-          var wa = window.Telegram && window.Telegram.WebApp;
-          if (wa) {
-            if (typeof wa.ready === "function") wa.ready();
-            if (typeof wa.expand === "function") wa.expand();
-          }
+            var wa = window.Telegram && window.Telegram.WebApp;
+
+            if (wa) {
+                if (typeof wa.ready === "function")
+                    wa.ready();
+
+                if (typeof wa.expand === "function")
+                    wa.expand();
+            }
+
         } catch (e) {}
 
         var initData = readInitData();
 
         if (!looksLikeInitData(initData)) {
-          showError("Open in Telegram", "This page only works inside the Telegram app.");
-          return;
+            showError(
+                "Open in Telegram",
+                "This page only works inside the Telegram app."
+            );
+            return;
         }
 
         setupClick(initData);
-      }
+    }
 
-      if (document.readyState === "loading") {
+    if (document.readyState === "loading") {
         document.addEventListener("DOMContentLoaded", start);
-      } else {
+    } else {
         start();
-      }
-    })();
-  </script>
-</body>
-</html>
+    }
+
+})();
+</script>
