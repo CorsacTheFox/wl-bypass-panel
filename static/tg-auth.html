@@ -91,7 +91,7 @@
       var SCHEME = "corsconnect";
       var HOST = "tginit";
       var PARAM = "initdata";
-      var DEEP_LINK = SCHEME + "://" + HOST + "?" + PARAM + "=";
+      var ANDROID_PACKAGE_NAME = "com.corsconnect.app"; // Укажите реальный applicationId из build.gradle
 
       var loadingView = document.getElementById("view-loading");
       var errorView = document.getElementById("view-error");
@@ -132,28 +132,40 @@
       }
 
       function setupClick(initData) {
-        var url = DEEP_LINK + encodeURIComponent(initData);
+        var encodedData = encodeURIComponent(initData);
+        var customSchemeUrl = SCHEME + "://" + HOST + "?" + PARAM + "=" + encodedData;
+
+        // Явный Android Intent URL с принудительной указанием scheme и package
+        var intentUrl = "intent://" + HOST + "?" + PARAM + "=" + encodedData +
+          "#Intent;scheme=" + SCHEME + 
+          ";package=" + ANDROID_PACKAGE_NAME + 
+          ";action=android.intent.action.VIEW;end";
 
         btnReturn.addEventListener("click", function () {
           var wa = window.Telegram && window.Telegram.WebApp;
+          var isAndroid = /android/i.test(navigator.userAgent);
 
-          // Используем openLink для корректного выхода из WebView Telegram
-          if (wa && typeof wa.openLink === "function") {
-            try {
-              wa.openLink(url);
-            } catch (e) {
-              window.location.href = url;
-            }
+          if (isAndroid) {
+            // Для Android переход по intent:// с package пробивает WebView Telegram
+            window.location.href = intentUrl;
           } else {
-            window.location.href = url;
+            // Для iOS / Desktop открываем через WebApp SDK
+            if (wa && typeof wa.openLink === "function") {
+              try {
+                wa.openLink(customSchemeUrl);
+              } catch (e) {
+                window.location.href = customSchemeUrl;
+              }
+            } else {
+              window.location.href = customSchemeUrl;
+            }
           }
 
-          // Закрываем Mini App через секунду после клика
           setTimeout(function () {
             try {
               if (wa && typeof wa.close === "function") wa.close();
             } catch (e) {}
-          }, 1000);
+          }, 1500);
         });
       }
 
