@@ -23,11 +23,13 @@ from fastapi.staticfiles import StaticFiles
 from config import ADMIN_PASSWORD, ADMIN_USERNAME, BASE_DIR, ensure_dirs
 from db import db
 from process_manager import process_manager
+from remnawave import remnawave_sync
 from routers import admin as admin_router
 from routers import app as app_router
 from routers import auth as auth_router
 from routers import client as client_router
 from routers import quick as quick_router
+from routers import remnawave as remnawave_router
 from routers import telegram as telegram_router
 from services import user_service
 
@@ -97,12 +99,15 @@ async def lifespan(app: FastAPI):
     # Start the process manager (reaper loop) BEFORE re-adopting orphaned
     # instances so their restarted waiters/tailers run on a live event loop.
     await process_manager.start()
+    # Remnawave auto-sync loop (no-op unless enabled in Admin → Remnawave).
+    await remnawave_sync.start()
     await _reconcile_stale_instances()
     log.info("Started — admin=%s, listening on config HOST/PORT", ADMIN_USERNAME)
     try:
         yield
     finally:
         log.info("Shutting down: stopping live processes")
+        await remnawave_sync.shutdown()
         await process_manager.shutdown()
         await db.close()
 
@@ -115,6 +120,7 @@ app.include_router(telegram_router.router)
 app.include_router(admin_router.router)
 app.include_router(client_router.router)
 app.include_router(quick_router.router)
+app.include_router(remnawave_router.router)
 app.include_router(app_router.router)
 
 # Static assets (CSS/JS)

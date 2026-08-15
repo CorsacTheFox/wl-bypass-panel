@@ -188,6 +188,10 @@ sudo bash /tmp/whitelist-manager/deploy/install.sh
 | `WB_SESSION_TTL` | `43200` (12h) | Login token lifetime |
 | `WB_TELEGRAM_BOT_TOKEN` | _(empty)_ | Telegram Mini App bot token (from BotFather). Empty = TMA login disabled (returns 404) |
 | `WB_TG_INITDATA_MAX_AGE` | `86400` (24h) | Reject Telegram `initData` older than N seconds (replay guard) |
+| `WB_REMNAWAVE_PANEL_URL` | _(empty)_ | Fallback Remnawave panel URL (normally set in Admin → Remnawave) |
+| `WB_REMNAWAVE_API_KEY` | _(empty)_ | Fallback Remnawave admin API key (normally set in Admin → Remnawave) |
+| `WB_REMNAWAVE_TIMEOUT` | `15` | Per-request timeout against the Remnawave panel (seconds) |
+| `WB_REMNAWAVE_SYNC_INTERVAL` | `30` | Default auto-sync interval (minutes; UI-managed) |
 
 ---
 
@@ -254,11 +258,13 @@ db.py                SQLite schema + async wrapper (singleton)
 security.py          PBKDF2 hashing, tokens, auth dependencies
 process_manager.py   ★ spawn / track / reap / kill / timeout  (the core)
 services.py          business logic + the Remnawave extensibility seam
+remnawave.py         Remnawave panel client + user import + auto-sync loop
 routers/
   auth.py            login / logout / me
   telegram.py        Telegram Mini App auth (initData validation)
   admin.py           CRUD clients + services + live overview
   client.py          utilization / list / start / stop
+  remnawave.py       Admin → Remnawave endpoints (config/test/squads/preview/migrate)
 static/index.html    single-page dark UI (also serves as the TMA)
 ```
 
@@ -288,32 +294,39 @@ is per-user (`users.max_concurrent`), configurable from the Admin UI.
 
 ---
 
-## Extensibility — plugging in a Remnawave webhook
+## Extensibility — Remnawave user import (built-in)
+
+Users of a [Remnawave](https://remna.st) panel can be imported in bulk from
+selected **squads** via **Admin → Remnawave**:
+
+1. **Connection** — enter the panel URL and an admin **API key** (created in
+   Remnawave under *API Tokens*), then *Test*. Stored locally in the settings
+   table (env fallbacks: `WB_REMNAWAVE_PANEL_URL` / `WB_REMNAWAVE_API_KEY`);
+   the key is only ever shown masked.
+2. **Import from squads** — *Load squads*, tick the squads you want, choose
+   options (only `ACTIVE` users, grant instance-creation, slots per user),
+   *Preview* (dry run, categorizes every user) and *Migrate*.
+3. **Auto-sync** — optionally re-run the import every N minutes in the
+   background; enabled/interval/squads are managed from the same card.
+
+Behavior:
+
+- **Read-only** — nothing in the Remnawave panel is modified, ever.
+- **Idempotent** — imported users are stamped with their Remnawave UUID in
+  `users.external_ref`; re-running (or auto-syncing) skips them.
+- Migrated users are created without a password (they set one at first login,
+  like bulk-created clients); a Telegram id present in Remnawave is carried
+  over so Telegram login works immediately.
+- Users whose username already exists locally are reported as *conflicts* and
+  skipped for the admin to resolve.
+- Imported clients are badged `rw` in **Admin → Clients**.
 
 All user creation flows through `UserService.create_client(...)` in
-`services.py`. To auto-create clients from a Remnawave webhook later, add a
-router that calls exactly that method — no changes to the admin UI, DB, or
-process manager are needed:
-
-```python
-# routers/remnawave.py (future)
-from fastapi import APIRouter, Header, HTTPException
-from services import user_service
-router = APIRouter(prefix="/api/webhooks/remnawave")
-
-@router.post("/user-created")
-async def on_user_created(payload: dict, x_signature: str = Header(...)):
-    if not verify(x_signature, payload):               # your HMAC check
-        raise HTTPException(403)
-    return await user_service.create_client(
-        username=payload["username"],
-        password=payload["temp_password"],
-        external_ref=payload["uuid"],                  # de-dup key
-    )
-```
-
-The `users.external_ref` UNIQUE column prevents duplicate clients from repeated
-webhook deliveries.
+`services.py` — the import described above is simply a caller of that method.
+If you later want to receive push events from Remnawave (webhooks) instead of
+pulling users, add a router that calls the same method with
+`external_ref=<remnawave uuid>`; the `users.external_ref` UNIQUE column
+prevents duplicates on repeated deliveries.
 
 ---
 
@@ -332,6 +345,11 @@ webhook deliveries.
 | PATCH| `/api/admin/clients/{id}` | admin | Update client |
 | DELETE | `/api/admin/clients/{id}` | admin | Delete client (+ stop instances) |
 | GET/POST/PATCH/DELETE | `/api/admin/services[/{id}]` | admin | Manage services |
+| GET/PUT | `/api/admin/remnawave/config` | admin | Remnawave panel URL/key + auto-sync settings (key masked on GET) |
+| POST | `/api/admin/remnawave/test` | admin | Test panel connection (returns panel version) |
+| GET  | `/api/admin/remnawave/squads` | admin | Squads defined in the Remnawave panel |
+| POST | `/api/admin/remnawave/preview` | admin | Dry-run import for the selected squads |
+| POST | `/api/admin/remnawave/migrate` | admin | Import new users from the selected squads |
 | GET  | `/api/admin/overview` | admin | All live instances |
 | GET  | `/api/client/services` | client | Available services |
 | GET  | `/api/client/utilization` | client | Slot usage (`{active, max, remaining}`) |

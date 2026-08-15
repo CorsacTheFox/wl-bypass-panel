@@ -75,6 +75,16 @@ HEARTBEAT_MAX_SECONDS = int(os.getenv("WB_HEARTBEAT_MAX", "3600"))        # 1h c
 # When empty (default), POST /api/auth/telegram is disabled (returns 404),
 # mirroring the QUICK_TOKEN gating pattern.
 TELEGRAM_BOT_TOKEN = os.getenv("WB_TELEGRAM_BOT_TOKEN", "")
+
+# Remnawave integration (Admin -> Remnawave tab): panel URL + admin API key
+# used to import users from squads. Both can be set here as a fallback and
+# overridden at runtime from the admin UI (stored in the settings table).
+REMNAWAVE_PANEL_URL = os.getenv("WB_REMNAWAVE_PANEL_URL", "")
+REMNAWAVE_API_KEY = os.getenv("WB_REMNAWAVE_API_KEY", "")
+# Per-request HTTP timeout against the Remnawave panel, in seconds.
+REMNAWAVE_TIMEOUT_SECONDS = float(os.getenv("WB_REMNAWAVE_TIMEOUT", "15"))
+# Auto-sync: default interval between automatic import runs (minutes).
+REMNAWAVE_SYNC_INTERVAL_MIN = int(os.getenv("WB_REMNAWAVE_SYNC_INTERVAL", "30"))
 # Maximum age (in seconds) of a Telegram initData before it is rejected as a
 # replay. Telegram recommends keeping this short; 24h matches the session TTL.
 TELEGRAM_INIT_DATA_MAX_AGE = int(os.getenv("WB_TG_INITDATA_MAX_AGE", str(24 * 3600)))
