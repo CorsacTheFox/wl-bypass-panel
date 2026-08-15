@@ -314,6 +314,12 @@ Behavior:
 - **Read-only** — nothing in the Remnawave panel is modified, ever.
 - **Idempotent** — imported users are stamped with their Remnawave UUID in
   `users.external_ref`; re-running (or auto-syncing) skips them.
+- **Usernames** — squad usernames are normalized to bare Telegram handles: a
+  leading `@` (or a `t.me/<handle>` prefix) is stripped, so an imported
+  `@john` becomes `john`.
+- **Instance creation** — granted to imported (ACTIVE) users by default
+  (option *Grant instance creation*). A re-run retroactively grants it to
+  users imported by earlier runs; it never revokes.
 - Migrated users are created without a password (they set one at first login,
   like bulk-created clients); a Telegram id present in Remnawave is carried
   over so Telegram login works immediately.

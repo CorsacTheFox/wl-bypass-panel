@@ -461,7 +461,7 @@
             <span class="text-sm text-gray-300">Only ACTIVE users</span>
           </label>
           <label class="flex items-center gap-2.5 cursor-pointer">
-            <input id="rw-opt-grant" type="checkbox" class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
+            <input id="rw-opt-grant" type="checkbox" checked class="w-4 h-4 rounded border-gray-600 bg-surface-800 accent-violet-600" />
             <span class="text-sm text-gray-300">Grant instance creation</span>
           </label>
           <div>
@@ -1320,7 +1320,7 @@ async function refreshRemnawave() {
     $('#rw-sync-enabled').checked = !!cfg.auto_sync.enabled;
     $('#rw-sync-interval').value = cfg.auto_sync.interval_min || 30;
     $('#rw-opt-active').checked = cfg.auto_sync.only_active !== false;
-    $('#rw-opt-grant').checked = !!cfg.auto_sync.grant_create_instances;
+    $('#rw-opt-grant').checked = cfg.auto_sync.grant_create_instances !== false;
     $('#rw-opt-slots').value = cfg.auto_sync.max_concurrent ?? 3;
     rwRenderLastSync(cfg.last_sync);
     // Auto-load squads once per session when the panel is configured.
@@ -1433,6 +1433,7 @@ function rwCategoryBadge(category) {
     already:  { color: '#6b7280', bg: 'rgba(107,114,128,0.1)', label: 'already imported' },
     conflict: { color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', label: 'username conflict' },
     inactive: { color: '#6b7280', bg: 'rgba(107,114,128,0.1)', label: 'inactive (skipped)' },
+    invalid:  { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',  label: 'invalid username' },
     created:  { color: '#22c55e', bg: 'rgba(34,197,94,0.12)',  label: 'created' },
     error:    { color: '#ef4444', bg: 'rgba(239,68,68,0.12)',  label: 'error' },
   };
@@ -1465,7 +1466,7 @@ function rwRenderUsers(title, users, countsHtml) {
     </tr>`).join('');
 }
 
-function rwCountsHtml(c, created, errors) {
+function rwCountsHtml(c, created, errors, granted) {
   let html = '<span style="color:#22c55e">new: ' + (c.new ?? 0) + '</span>'
     + ' <span class="text-gray-600">\u00b7</span> '
     + '<span style="color:#9ca3af">already: ' + (c.already ?? 0) + '</span>'
@@ -1473,9 +1474,17 @@ function rwCountsHtml(c, created, errors) {
     + '<span style="color:#f59e0b">conflicts: ' + (c.conflict ?? 0) + '</span>'
     + ' <span class="text-gray-600">\u00b7</span> '
     + '<span class="text-gray-500">inactive: ' + (c.inactive ?? 0) + '</span>';
+  if (c.invalid) {
+    html += ' <span class="text-gray-600">\u00b7</span> '
+      + '<span style="color:#ef4444">invalid: ' + c.invalid + '</span>';
+  }
   if (created !== undefined) {
     html += ' <span class="text-gray-600">\u00b7</span> '
       + '<span style="color:#22c55e">created: ' + created + '</span>';
+  }
+  if (granted) {
+    html += ' <span class="text-gray-600">\u00b7</span> '
+      + '<span style="color:#67e8f9">access granted: ' + granted + '</span>';
   }
   if (errors) {
     html += ' <span class="text-gray-600">\u00b7</span> '
@@ -1520,7 +1529,8 @@ $('#btn-rw-migrate').addEventListener('click', async () => {
     const p = await api.post('/api/admin/remnawave/preview', {
       squads, only_active: $('#rw-opt-active').checked,
     });
-    rwRenderUsers('Migration result', p.users, rwCountsHtml(p.counts, r.created, errs));
+    rwRenderUsers('Migration result', p.users,
+      rwCountsHtml(p.counts, r.created, errs, r.granted_existing));
     if (errs) {
       (r.errors || []).forEach(e => console.warn('migration error:', e.username, e.error));
       toast((r.errors[0]).username + ': ' + (r.errors[0]).error, 'err');

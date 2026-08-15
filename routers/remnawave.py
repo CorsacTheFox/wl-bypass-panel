@@ -112,7 +112,8 @@ async def list_squads():
 class MigrateRequest(BaseModel):
     squads: list[str] = Field(min_length=1)
     only_active: bool = True
-    grant_create_instances: bool = False
+    # ON by default: imported active users may create instances
+    grant_create_instances: bool = True
     max_concurrent: int = Field(default=DEFAULT_MAX_CONCURRENT, ge=0, le=10)
 
 

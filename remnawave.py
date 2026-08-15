@@ -247,7 +247,9 @@ async def get_sync_options() -> dict:
         "interval_min": int((await _get_setting(CONF_AUTO_SYNC_INTERVAL)) or REMNAWAVE_SYNC_INTERVAL_MIN),
         "squads": [s for s in squads if isinstance(s, str)],
         "only_active": (await _get_setting(CONF_SYNC_ONLY_ACTIVE) or "1") == "1",
-        "grant_create_instances": (await _get_setting(CONF_SYNC_GRANT_CREATE)) == "1",
+        # default ON: imported active users may create instances (matching the
+        # manual migration default)
+        "grant_create_instances": (await _get_setting(CONF_SYNC_GRANT_CREATE) or "1") == "1",
         "max_concurrent": int((await _get_setting(CONF_SYNC_MAX_CONCURRENT)) or DEFAULT_MAX_CONCURRENT),
     }
 
@@ -275,11 +277,19 @@ async def _record_last_sync(summary: dict, trigger: str) -> None:
 class RemnawaveMigrationService:
     """Fetches users from selected Remnawave squads and creates local clients.
 
+    Usernames are normalized to bare Telegram handles (leading ``@`` and
+    ``t.me/`` prefixes stripped) so Telegram login can match them later.
+
     Classification against local accounts:
       * new        — no local user with this Remnawave UUID or username
       * already    — local user exists with the same ``external_ref``
       * conflict   — username taken by a locally-managed account (skipped;
                      the admin resolves these by hand)
+      * inactive   — non-ACTIVE status, skipped when only_active is set
+      * invalid    — no usable username after normalization
+
+    Instance creation is granted to imported users by default; a re-run
+    retroactively grants it to users imported by earlier runs.
     """
 
     async def list_squads(self) -> list[dict]:
@@ -295,6 +305,29 @@ class RemnawaveMigrationService:
             "metadata": meta,
         }
 
+    @staticmethod
+    def _sanitize_import_username(name: str) -> str:
+        """Normalize a Remnawave username into a local username.
+
+        Squads are often populated by Telegram bots, so usernames arrive as
+        Telegram handles — with a leading ``@`` (sometimes as a bare
+        ``t.me/<handle>`` link). Strip those prefixes so the local username is
+        the plain handle, exactly what the Telegram-login flow looks up
+        (``UserService._sanitize_tg_username`` compares the same way, and the
+        users.username column is COLLATE NOCASE).
+        """
+        name = (name or "").strip()
+        changed = True
+        while changed:
+            changed = False
+            lowered = name.lower()
+            for prefix in ("https://t.me/", "http://t.me/", "t.me/", "@"):
+                if lowered.startswith(prefix):
+                    name = name[len(prefix):].strip()
+                    changed = True
+                    break
+        return name
+
     async def fetch_users(self, squad_uuids: list[str]) -> list[dict]:
         """All users of the given squads, deduped by uuid (first squad wins)."""
         client = await get_client()
@@ -306,7 +339,7 @@ class RemnawaveMigrationService:
                     continue
                 entry = {
                     "uuid": uuid,
-                    "username": str(u.get("username") or ""),
+                    "username": self._sanitize_import_username(str(u.get("username") or "")),
                     "status": u.get("status") or "",
                     "expire_at": u.get("expireAt"),
                     "telegram_id": u.get("telegramId"),
@@ -317,9 +350,15 @@ class RemnawaveMigrationService:
 
     async def _classify(self, users: list[dict], only_active: bool) -> tuple[list[dict], dict]:
         """Split fetched users into (importable, counts)."""
-        counts = {"total": len(users), "new": 0, "already": 0, "conflict": 0, "inactive": 0}
+        counts = {"total": len(users), "new": 0, "already": 0, "conflict": 0,
+                  "inactive": 0, "invalid": 0}
         importable: list[dict] = []
         for u in users:
+            if not u["username"]:
+                # nothing left after stripping '@'/'t.me/' — unusable handle
+                counts["invalid"] += 1
+                u["category"] = "invalid"
+                continue
             if only_active and u["status"] and u["status"].upper() != "ACTIVE":
                 counts["inactive"] += 1
                 u["category"] = "inactive"
@@ -356,7 +395,7 @@ class RemnawaveMigrationService:
         self,
         squad_uuids: list[str],
         only_active: bool = True,
-        grant_create_instances: bool = False,
+        grant_create_instances: bool = True,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
     ) -> dict:
         users = await self.fetch_users(squad_uuids)
@@ -379,9 +418,26 @@ class RemnawaveMigrationService:
                 # e.g. telegram_id already linked to another local account
                 errors.append({"username": u["username"], "error": str(e)})
 
+        # Imported active users should be able to create instances. Newly
+        # created ones got the flag above; apply it retroactively to users
+        # imported by earlier runs (category "already") so a re-run fixes
+        # them too. Never revokes: with the option off nothing is touched.
+        granted_existing = 0
+        if grant_create_instances:
+            for u in users:
+                if u.get("category") != "already":
+                    continue
+                cur = await db.execute(
+                    "UPDATE users SET can_create_instances=1 "
+                    "WHERE external_ref=? AND can_create_instances=0",
+                    (u["uuid"],),
+                )
+                granted_existing += cur.rowcount or 0
+
         report = {
             "counts": counts,
             "created": created,
+            "granted_existing": granted_existing,
             "errors": errors,
             # squash usernames for compactness in the UI
             "conflict_usernames": [u["username"] for u in users if u["category"] == "conflict"],
