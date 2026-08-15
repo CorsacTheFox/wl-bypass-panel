@@ -17,7 +17,7 @@ pieces live here:
 
 API shapes (Remnawave API spec v3.2.x):
     GET /api/system/metadata     -> {response: {version, ...}}
-    GET /api/internal-squads     -> {response: {total, squads: [{uuid, name}]}}
+    GET /api/internal-squads     -> {response: {total, internalSquads: [{uuid, name}]}}
     GET /api/users?start&size&filters=<json>
       filters = [{"id": "activeInternalSquads", "value": "<squad-uuid>"}]
       -> {response: {users: [...], total}}
@@ -127,9 +127,30 @@ class RemnawaveClient:
         return data.get("response") or {}
 
     async def get_internal_squads(self) -> list[dict]:
+        """Squads defined in the panel.
+
+        The contract schema (every squad-capable version, 2.2.1 → current)
+        returns ``{response: {total, internalSquads: [...]}}`` — note the
+        array key is ``internalSquads``. Older/unofficial shapes are accepted
+        defensively, and an unrecognized shape raises instead of silently
+        parsing to an empty list (which once surfaced as "no squads").
+        """
         data = await self._get("/internal-squads")
-        response = data.get("response") or {}
-        return response.get("squads") or []
+        response = data.get("response")
+        if isinstance(response, list):  # defensive: unwrapped array
+            return response
+        if isinstance(response, dict):
+            for key in ("internalSquads", "squads"):
+                items = response.get(key)
+                if isinstance(items, list):
+                    return items
+            raise RemnawaveError(
+                "unexpected /internal-squads response shape "
+                f"(keys: {sorted(response.keys()) or 'empty'})"
+            )
+        raise RemnawaveError(
+            f"unexpected /internal-squads response (got {type(response).__name__})"
+        )
 
     async def iter_users(self, squad_uuid: str):
         """Yield every user of a squad, paginating through GET /api/users."""
