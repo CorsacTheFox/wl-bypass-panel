@@ -106,6 +106,11 @@
       // Важно: Полноценная HTTPS ссылка для Android App Links (чтобы WebView не бросал ошибки)
       var HTTPS_HOST = "https://beta.cors-fox.cc/tginit";
       var PARAM = "initdata";
+      // Сколько ждать появления initData, прежде чем решить, что страница
+      // открыта не в Telegram: SDK грузится с telegram.org и на медленной
+      // сети/холодном старте WebView может опаздывать на секунды.
+      var WAIT_SDK_MS = 3000;
+      var POLL_MS = 200;
 
       var loadingView = document.getElementById("view-loading");
       var errorView = document.getElementById("view-error");
@@ -131,51 +136,62 @@
       }
 
       function readInitData() {
+        // 1. Основной путь: SDK загрузился и отдал подписанный initData.
         try {
           var waInit = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData;
           if (waInit) return waInit;
         } catch (e) {}
 
+        // 2. Фолбэк: Telegram открывает Mini App как
+        //    https://page/#tgWebAppData=<urlencoded initData>&tgWebAppVersion=...
+        //    Читаем фрагмент напрямую — работает даже пока SDK не догрузился.
         try {
-          var loc = window.location.href;
-          var fromHash = new URL(loc.replace("#", "?"));
-          var v = fromHash.searchParams.get("tgWebAppData");
-          if (v) return v;
+          var hash = window.location.hash || "";
+          if (hash.charAt(0) === "#") hash = hash.slice(1);
+          if (hash) {
+            var v = new URLSearchParams(hash).get("tgWebAppData");
+            if (v) return v;
+          }
+        } catch (e) {}
+
+        // 3. Редкий случай: данные отдали в query-части, а не в hash.
+        try {
+          var q = window.location.search || "";
+          if (q.charAt(0) === "?") q = q.slice(1);
+          if (q) {
+            var vq = new URLSearchParams(q).get("tgWebAppData");
+            if (vq) return vq;
+          }
         } catch (e) {}
         return "";
       }
 
       function deliverInitData(initData) {
         var wa = window.Telegram && window.Telegram.WebApp;
-        
-        // ВАЖНОЕ ИСПРАВЛЕНИЕ:
-        // Передаём сырой initData в параметр, НЕ оборачивая повторно в encodeURIComponent,
-        // так как Telegram WebApp API или openLink сделает это сам при вызове intent.
+
+        // initdata кодируем ровно один раз: дальше значение читает страница
+        // /tginit и приложение (Uri.decode).
         var targetUrl = HTTPS_HOST + "?" + PARAM + "=" + encodeURIComponent(initData);
 
         var doRedirect = function () {
           if (wa && typeof wa.openLink === "function") {
             try {
               wa.openLink(targetUrl, { try_instant_view: false });
+              return;
             } catch (e) {
-              window.location.href = targetUrl;
+              /* openLink не принял ссылку — падаем на прямую навигацию */
             }
-          } else {
-            window.location.href = targetUrl;
           }
-
-          // Даем 1 секунду Android перехватить Intent перед закрытием WebView
-          setTimeout(function () {
-            try {
-              if (wa && typeof wa.close === "function") wa.close();
-            } catch (e) {}
-          }, 1000);
+          window.location.href = targetUrl;
         };
 
-        // Слушатель по клику
+        // Кнопка остаётся рабочей: повторное нажатие = повторная попытка.
         btnReturn.addEventListener("click", doRedirect);
 
-        // Авто-клик через 400ms для удобства
+        // Авто-редирект через 400ms для удобства. Страницу НЕ закрываем
+        // автоматически: wa.close() сразу после openLink срывал ещё не
+        // обработанный Intent на Android и прятал кнопку раньше, чем
+        // пользователь успевал её увидеть.
         setTimeout(doRedirect, 400);
       }
 
@@ -188,14 +204,23 @@
           }
         } catch (e) {}
 
-        var initData = readInitData();
-
-        if (!looksLikeInitData(initData)) {
-          showError("Open in Telegram", "This page only works inside the Telegram app.");
-          return;
-        }
-
-        deliverInitData(initData);
+        // initData может появиться с задержкой. Опрашиваем пару секунд и
+        // только потом показываем "Open in Telegram" — раньше страница
+        // ошибочно считала, что она открыта не в Telegram, и не редиректила.
+        var waited = 0;
+        var timer = setInterval(function () {
+          var initData = readInitData();
+          if (looksLikeInitData(initData)) {
+            clearInterval(timer);
+            deliverInitData(initData);
+            return;
+          }
+          waited += POLL_MS;
+          if (waited >= WAIT_SDK_MS) {
+            clearInterval(timer);
+            showError("Open in Telegram", "This page only works inside the Telegram app.");
+          }
+        }, POLL_MS);
       }
 
       if (document.readyState === "loading") {

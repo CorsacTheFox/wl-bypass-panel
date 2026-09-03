@@ -28,6 +28,12 @@ class TelegramAuthError(Exception):
     """Raised when a Telegram WebApp initData string fails validation."""
 
 
+# Clock-skew allowance for the initData replay guard: if this server's clock
+# runs slightly behind Telegram's, a perfectly fresh initData would otherwise
+# be rejected as "auth_date is in the future" (intermittent 401s).
+INIT_DATA_CLOCK_SKEW_SECONDS = 60
+
+
 # --------------------------------------------------------------------------- #
 # Password hashing
 # --------------------------------------------------------------------------- #
@@ -149,7 +155,7 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age: int) ->
     except (TypeError, ValueError):
         raise TelegramAuthError("initData auth_date is not an integer")
     age = datetime.now(timezone.utc).timestamp() - auth_date
-    if age < 0:
+    if age < -INIT_DATA_CLOCK_SKEW_SECONDS:
         raise TelegramAuthError("initData auth_date is in the future")
     if age > max_age:
         raise TelegramAuthError("initData expired")

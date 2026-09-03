@@ -1938,10 +1938,13 @@ async function openServiceModal(s = {}) {
     }
   } catch { /* not running inside Telegram — ignore */ }
 
-  // If opened as a Telegram Mini App, auto-authenticate via the signed
-  // initData. Falls through to the normal login/restore path on any failure
-  // so the page still works in a regular browser.
-  if (window.Telegram?.WebApp?.initData && !api.token) {
+  // If opened as a Telegram Mini App, always authenticate via the signed
+  // initData: it cryptographically identifies the actual Telegram user and
+  // must override any token cached in localStorage — otherwise a stale web
+  // session of another (e.g. admin) account on this device leaks into the
+  // bot and the wrong dashboard is rendered. Falls through to the normal
+  // login/restore path on any failure so the page still works in a browser.
+  if (window.Telegram?.WebApp?.initData) {
     try {
       const r = await api.post('/api/auth/telegram', { initData: window.Telegram.WebApp.initData });
       api.token = r.token;

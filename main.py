@@ -136,7 +136,7 @@ async def health():
 # Quick-launch page: NON-INTERACTIVE. GET /quick starts an instance, waits for
 # the join link, and renders a styled HTML page showing it (server-side, no JS).
 # The raw plain-text link is available at /api/quick/link for bots/integrations.
-from fastapi import HTTPException  # noqa: E402
+from fastapi import HTTPException, Request  # noqa: E402
 from fastapi.responses import HTMLResponse, PlainTextResponse  # noqa: E402
 from routers.quick import produce_link  # noqa: E402
 
@@ -221,6 +221,184 @@ async def tg_auth_page():
     if TG_AUTH_PAGE.exists():
         return FileResponse(TG_AUTH_PAGE)
     return {"detail": "tg-auth page not found"}
+
+
+# Android handoff page: the https target the /tg-auth bridge page redirects to
+# (https://<domain>/tginit?initdata=...). When Android does not auto-open the
+# app through the verified App Link (unverified assetlinks.json, browser
+# chooser, iOS/Desktop Telegram), this server-rendered page completes the
+# handoff by navigating to the app's custom scheme
+# (corsconnect://tginit?initdata=...) instead of falling through to the SPA
+# dashboard (the previous "broken page" behaviour).
+def _escape_attr(s: str) -> str:
+    return (
+        (s or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+def _tg_init_html_page(init_data: str) -> str:
+    return """<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Returning to Cors.Connect…</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: #08080a;
+      color: #d1d5db;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.25rem;
+    }
+    .wrap { width: 100%; max-width: 26rem; }
+    .card {
+      background: #14141a;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 18px;
+      padding: 2.25rem 1.75rem;
+      text-align: center;
+    }
+    .logo {
+      width: 3.25rem; height: 3.25rem; border-radius: 14px;
+      background: #7c3aed;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 1.35rem;
+      box-shadow: 0 10px 28px rgba(124, 58, 237, 0.28);
+    }
+    h1 { color: #fff; font-size: 1.2rem; font-weight: 600; margin: 0 0 .5rem; }
+    .sub { color: #6b7280; font-size: .82rem; margin: 0 0 1.5rem; line-height: 1.5; }
+    .spinner {
+      width: 30px; height: 30px;
+      border: 3px solid rgba(255, 255, 255, 0.12);
+      border-top-color: #7c3aed;
+      border-radius: 50%;
+      margin: 0 auto 1.1rem;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .error .logo { background: #b91c1c; box-shadow: 0 10px 28px rgba(185, 28, 28, 0.25); }
+    .hidden { display: none !important; }
+    .btn-action {
+      display: inline-block;
+      width: 100%;
+      padding: 0.9rem 1.25rem;
+      background: #7c3aed;
+      color: #ffffff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    .btn-action:active { background: #6d28d9; transform: scale(0.98); }
+  </style>
+</head>
+<body data-initdata="__INITDATA__">
+  <div class="wrap">
+    <div class="card">
+      <div class="logo">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+      </div>
+
+      <!-- Opening / manual-open state -->
+      <div id="view-loading">
+        <div class="spinner"></div>
+        <h1>Opening Cors.Connect…</h1>
+        <p class="sub">Returning to the app with your Telegram session.</p>
+        <button id="btn-open" class="btn-action">Open App</button>
+      </div>
+
+      <!-- Fallback state -->
+      <div id="view-error" class="error hidden">
+        <h1 id="error-title">App didn't open?</h1>
+        <p class="sub" id="error-message">Tap below to open Cors.Connect, or return to the app and sign in again.</p>
+        <button id="btn-retry" class="btn-action">Try Again</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var raw = document.body.getAttribute("data-initdata") || "";
+      var loadingView = document.getElementById("view-loading");
+      var errorView = document.getElementById("view-error");
+      var errorTitle = document.getElementById("error-title");
+      var errorMessage = document.getElementById("error-message");
+      var btnOpen = document.getElementById("btn-open");
+      var btnRetry = document.getElementById("btn-retry");
+
+      function showError(title, message, showRetry) {
+        loadingView.classList.add("hidden");
+        errorView.classList.remove("hidden");
+        if (title) errorTitle.textContent = title;
+        if (message) errorMessage.textContent = message;
+        btnRetry.classList.toggle("hidden", !showRetry);
+      }
+
+      function openApp() {
+        // Deep-link contract (must match the Android manifest):
+        // corsconnect://tginit?initdata=<urlencoded initData>
+        window.location.href = "corsconnect://tginit?initdata=" + encodeURIComponent(raw);
+      }
+
+      btnOpen.addEventListener("click", openApp);
+      btnRetry.addEventListener("click", openApp);
+
+      if (!raw || raw.indexOf("hash=") === -1) {
+        showError("Link expired", "This sign-in link is incomplete. Start again from the Cors.Connect app.", false);
+        return;
+      }
+
+      // Try the app immediately; Chrome fires the intent for custom schemes
+      // on navigation (a chooser may appear when the App Link is unverified).
+      openApp();
+
+      // If the page is still visible shortly after, the app did not take the
+      // link — offer a manual button (needs a user gesture on some browsers).
+      setTimeout(function () {
+        if (!document.hidden) {
+          showError("App didn't open?", "Tap below to open Cors.Connect, or return to the app and sign in again.", true);
+        }
+      }, 1500);
+
+      // The app opened (page hidden): restore the neutral view so a stale
+      // "didn't open" message is not shown when the user comes back.
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          errorView.classList.add("hidden");
+          loadingView.classList.remove("hidden");
+        }
+      });
+    })();
+  </script>
+</body>
+</html>""".replace("__INITDATA__", _escape_attr(init_data))
+
+
+@app.get("/tginit")
+async def tg_init_handoff(request: Request):
+    """Serve the Android handoff page for ?initdata=... (initData also accepted)."""
+    init_data = request.query_params.get("initdata") or request.query_params.get("initData") or ""
+    return HTMLResponse(_tg_init_html_page(init_data), headers={"Cache-Control": "no-store"})
 
 
 # SPA fallback: any non-API, non-static GET -> index.html
