@@ -111,6 +111,9 @@ async def get_user_by_token(token: str) -> dict | None:
         "max_concurrent": row["max_concurrent"],
         "must_change_password": False if is_tg else bool(row["password_must_change"]),
         "can_create_instances": bool(row["can_create_instances"]),
+        # Carried for the app flow (instance reuse/claim tagging); not exposed
+        # by /api/auth/me.
+        "telegram_id": row["telegram_id"],
     }
 
 

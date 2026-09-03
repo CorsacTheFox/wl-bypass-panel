@@ -26,9 +26,11 @@ Authorization model:
   * Every request carries the shared static app token in the ``X-App-Token``
     header (see ``WB_APP_TOKEN`` / :func:`security.verify_app_token`). When that
     token is unset the whole router returns 404.
-  * User identity is established via Telegram WebApp ``initData`` at claim time
-    (same validation as ``POST /api/auth/telegram``); on success the app
-    receives a normal bearer session token to use afterwards.
+  * User identity is established either by a **Remnawave subscription link**
+    (``POST /api/app/auth/link`` — the primary flow for current APKs) or, as a
+    legacy fallback for old APKs, via Telegram WebApp ``initData`` at claim
+    time; on success the app receives a normal bearer session token to use
+    afterwards. ``POST /instances`` and ``/claim`` accept either credential.
 
 Temporary instances are spawned under ``user_id=1`` (admin) with ``is_quick=1``
 so the existing quick-session cap, reaper and restart reconciliation all apply
@@ -52,12 +54,16 @@ from config import (
     TELEGRAM_INIT_DATA_MAX_AGE,
 )
 from db import db
+from fastapi.security import HTTPAuthorizationCredentials
 from process_manager import process_manager
+from remnawave import RemnawaveError, get_sync_options, is_configured, remnawave_service
 from routers.quick import _quick_active_count, _resolve_quick_service
 from security import (
     TelegramAuthError,
+    bearer_scheme,
     create_session,
     get_current_user,
+    get_user_by_token,
     validate_telegram_init_data,
     verify_app_token,
 )
@@ -79,6 +85,27 @@ router = APIRouter(
 # their APP_TEMP_TIMEOUT (300s) timeout_at anyway, since rescheduling happens
 # only on claim).
 _claim_tokens: dict[str, int] = {}
+
+
+async def optional_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> dict | None:
+    """The bearer-identified user when the app presents a session token,
+    otherwise None.
+
+    A present-but-invalid bearer still yields 401 (the client believes it is
+    signed in — silently downgrading it to the anonymous temp flow would be
+    wrong). Used by the link-auth identity path of ``POST /instances`` and
+    ``/claim``.
+    """
+    if creds is None or not creds.credentials:
+        return None
+    user = await get_user_by_token(creds.credentials)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        )
+    return user
 
 
 def _now_utc() -> datetime:
@@ -109,17 +136,20 @@ async def _extend(instance_id: int, add_seconds: int, cap_seconds: int) -> str |
 class CreateInstanceIn(BaseModel):
     # Optional service override; omitted -> the configured quick service.
     service_id: int | None = None
-    # Optional Telegram WebApp initData. When the Android app already has a
-    # valid Telegram session it sends this on connect so the server can REUSE
-    # the user's still-live instance (instead of spawning a duplicate) or, if
-    # none exists, create + claim on their behalf. Omitted -> the unauthenticated
-    # 5-minute temp flow (no extension possible).
+    # Optional Telegram WebApp initData (legacy auth path, old APKs). When the
+    # app already has a valid Telegram session it sends this on connect so the
+    # server can REUSE the user's still-live instance (instead of spawning a
+    # duplicate) or, if none exists, create + claim on their behalf. Omitted ->
+    # the unauthenticated 5-minute temp flow (no extension possible), unless a
+    # valid bearer session token is supplied (link-auth path).
     telegram_init_data: str | None = None
 
 
 class ClaimIn(BaseModel):
-    # Raw Telegram WebApp initData string.
-    telegram_init_data: str
+    # Raw Telegram WebApp initData string (legacy auth path, old APKs).
+    # Newer clients authenticate with a bearer session token instead
+    # (Authorization header) and omit this.
+    telegram_init_data: str | None = None
     # The claim_token returned when the temp instance was created.
     claim_token: str
 
@@ -181,6 +211,118 @@ def _authenticate_telegram(telegram_init_data: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
+class LinkAuthIn(BaseModel):
+    # The user's Remnawave subscription link or its bare token, e.g.
+    # https://<panel>/sub/<token>  or just <token>.
+    subscription: str
+
+
+def _extract_subscription_token(subscription: str) -> str:
+    """Pull the token out of a subscription URL (or pass a bare token through).
+
+    Accepts the shapes Remnawave hands out: ``https://<panel>/sub/<token>``,
+    ``https://<panel>/c/<token>`` (clash) and a bare ``<token>``.
+    """
+    value = (subscription or "").strip()
+    if "://" in value:
+        from urllib.parse import urlparse
+
+        path = urlparse(value).path.rstrip("/")
+        segments = [s for s in path.split("/") if s]
+        if segments:
+            return segments[-1]
+        return ""
+    return value
+
+
+async def _resolve_link_user(subscription: str) -> dict:
+    """Resolve a subscription link to a local user, creating one on the fly.
+
+    The token is looked up among the panel users of the configured sync squads
+    (``subscriptionId`` / ``subscriptionUserName``). A panel user not yet
+    imported is auto-created locally with the same parameters the sync would
+    use, so sign-in never waits for the next sync cycle.
+    """
+    if not await is_configured():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Subscription sign-in is not configured (no Remnawave panel)",
+        )
+
+    token = _extract_subscription_token(subscription)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="subscription is empty or has no token",
+        )
+
+    try:
+        panel_user = await remnawave_service.find_user_by_subscription(token)
+    except RemnawaveError as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+    if panel_user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Subscription not found — check the link or contact support",
+        )
+    if str(panel_user.get("status") or "").upper() != "ACTIVE":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Subscription is expired or disabled",
+        )
+
+    # 1. already imported
+    existing = await user_service.find_by_external_ref(panel_user["uuid"])
+    if existing:
+        return await user_service.get(existing["id"])
+
+    # 2. create on the fly, mirroring the sync's parameters (grant flag,
+    #    concurrency cap) so an auto-created user matches an imported one.
+    opts = await get_sync_options()
+    username = panel_user.get("username") or (
+        f"user_{panel_user['telegram_id']}" if panel_user.get("telegram_id") else ""
+    )
+    for candidate in (username, f"remna_{panel_user['uuid'][:8]}"):
+        if not candidate:
+            continue
+        try:
+            return await user_service.create_client(
+                username=candidate,
+                password=None,
+                max_concurrent=opts["max_concurrent"],
+                external_ref=panel_user["uuid"],
+                telegram_id=panel_user.get("telegram_id"),
+                can_create_instances=bool(opts["grant_create_instances"]),
+                must_change_password=False,
+            )
+        except ValueError:
+            continue  # username clash (locally-managed account) — next candidate
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Could not create a local account for this subscription — contact support",
+    )
+
+
+@router.post("/auth/link")
+async def link_auth(body: LinkAuthIn):
+    """Sign the Android app in with a Remnawave subscription link.
+
+    Replaces the Telegram-bot auth for the app: the subscription token is the
+    user's existing secret (it already grants their VPN config), so proving
+    possession of it is sufficient identity. Returns the same shape as
+    POST /api/auth/login so the client reuses its login plumbing.
+    """
+    user = await _resolve_link_user(body.subscription)
+    token = await create_session(user["id"])
+    return {
+        "token": token,
+        "role": user["role"],
+        "username": user["username"],
+        "must_change_password": False,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # endpoints
 # --------------------------------------------------------------------------- #
@@ -188,27 +330,30 @@ def _authenticate_telegram(telegram_init_data: str) -> dict:
 async def app_health():
     """Readiness probe for the Android app.
 
-    Reports whether Telegram login is configured (the app needs it for the
-    claim flow) and whether any enabled service exists. Always 200 when the
-    router itself is enabled (the ``X-App-Token`` gate already returned 404
-    otherwise).
+    Reports which auth backends are usable (Telegram initData and/or the
+    Remnawave subscription link-auth) and whether any enabled service exists.
+    Always 200 when the router itself is enabled (the ``X-App-Token`` gate
+    already returned 404 otherwise).
     """
     services = await _resolve_quick_service()
     return {
         "ok": True,
         "telegram_enabled": bool(TELEGRAM_BOT_TOKEN),
+        "link_auth": await is_configured(),
         "service_available": services is not None,
     }
 
 
 @router.post("/instances", status_code=status.HTTP_201_CREATED)
-async def create_temp_instance(body: CreateInstanceIn):
+async def create_temp_instance(
+    body: CreateInstanceIn, session_user: dict | None = Depends(optional_user)
+):
     """Create an instance for the Android app, reusing an existing one if possible.
 
-    Two modes, selected by whether ``telegram_init_data`` is supplied:
+    Three modes, by how the caller authenticates:
 
-    * **Authenticated (initData present):** the user is resolved via Telegram.
-      If they already have a still-live app instance, it is **returned as-is**
+    * **Legacy initData (old APKs):** the user is resolved via Telegram. If
+      they already have a still-live app instance, it is **returned as-is**
       (HTTP 200, ``reused=true``) — no new process is spawned, preventing the
       duplicate-instance pile-up on reconnect. Otherwise a new temp instance is
       created and *immediately claimed* on the user's behalf (HTTP 201,
@@ -216,22 +361,36 @@ async def create_temp_instance(body: CreateInstanceIn):
       reuses it. The 5-minute default lifetime applies; authorized users extend
       it via the heartbeat endpoint.
 
-    * **Unauthenticated (no initData):** a 5-minute temp instance is created
-      under ``user_id=1`` with a one-time ``claim_token``. The caller later
-      completes Telegram auth and calls ``/claim`` to transfer it. Unauthorized
-      users (no ``can_create_instances``) can never extend beyond these 5 min.
+    * **Bearer session (link-auth, new APKs):** same reuse/claim behaviour for
+      the user identified by ``Authorization: Bearer`` (see
+      ``POST /api/app/auth/link``).
+
+    * **Unauthenticated (neither):** a 5-minute temp instance is created under
+      ``user_id=1`` with a one-time ``claim_token``. The caller later completes
+      auth and calls ``/claim`` to transfer it. Unauthorized users (no
+      ``can_create_instances``) can never extend beyond these 5 min.
 
     Returns 429 if the global quick-session cap is reached, 404 if no service is
-    available, 401 on bad initData.
+    available, 401 on bad initData / bad bearer.
     """
-    # --- Authenticated path: reuse an existing live instance if there is one --
+    # --- Identity: legacy initData or bearer session -------------------------
+    user: dict | None = None
+    tag: str | None = None  # app_session tag; None disables instance reuse
     if body.telegram_init_data and TELEGRAM_BOT_TOKEN:
         tg_user = _authenticate_telegram(body.telegram_init_data)
         user = await user_service.get_or_create_for_telegram(
             tg_user["id"], tg_user.get("username")
         )
         tag = str(tg_user["id"])
-        existing = await instance_service.find_active_app_session(tg_user["id"])
+    elif session_user is not None:
+        user = session_user
+        tag = str(session_user["telegram_id"]) if session_user.get("telegram_id") else None
+
+    # --- Authenticated path: reuse an existing live instance if there is one --
+    if user is not None:
+        existing = None
+        if tag is not None:
+            existing = await instance_service.find_active_app_session(int(tag))
         if existing is not None:
             # Reuse: no new process, no new row. Issue a fresh session token so
             # the client can keep heartbeating. The instance keeps its current
@@ -280,10 +439,7 @@ async def create_temp_instance(body: CreateInstanceIn):
     instance_id = instance["id"]
 
     # --- Authenticated create: claim immediately on the caller's behalf ------
-    if body.telegram_init_data and TELEGRAM_BOT_TOKEN:
-        # tg_user / user resolved above (the reuse branch returned early or fell
-        # through). Re-derive cheaply from the already-validated values.
-        tag = str(tg_user["id"])
+    if user is not None:
         if user["role"] != "admin" and not user.get("can_create_instances"):
             # Guest: keep the 5-min temp running so they can still try the
             # manual claim flow / use it briefly, but don't pre-claim. Their
@@ -340,15 +496,19 @@ async def create_temp_instance(body: CreateInstanceIn):
 
 
 @router.post("/instances/{instance_id}/claim")
-async def claim_instance(instance_id: int, body: ClaimIn):
+async def claim_instance(
+    instance_id: int, body: ClaimIn, session_user: dict | None = Depends(optional_user)
+):
     """Transfer a temp instance to the authenticated user.
 
-    Validates the Telegram WebApp ``initData``, resolves (or creates) the local
-    user, reassigns the instance to them, clears the ``is_quick`` flag and
-    resets the timeout to the default lifetime (``WB_DEFAULT_TIMEOUT_SECONDS``,
-    5 min). The running process is *not* restarted, so any authorization the
-    user did inside the spawned service is preserved. The caller then keeps the
-    instance alive beyond 5 min via the heartbeat endpoint.
+    Authenticates via a Telegram WebApp ``initData`` (legacy, old APKs) OR a
+    bearer session token (link-auth, ``POST /api/app/auth/link``); when both
+    are present the initData wins. Resolves (or creates) the local user,
+    reassigns the instance to them, clears the ``is_quick`` flag and resets the
+    timeout to the default lifetime (``WB_DEFAULT_TIMEOUT_SECONDS``, 5 min).
+    The running process is *not* restarted, so any authorization the user did
+    inside the spawned service is preserved. The caller then keeps the instance
+    alive beyond 5 min via the heartbeat endpoint.
 
     Permission: anyone may spawn a short temp instance, but claiming it (which
     grants the ability to heartbeat/extend) requires the instance-creation
@@ -358,12 +518,20 @@ async def claim_instance(instance_id: int, body: ClaimIn):
     Returns the user's session token (use it as ``Authorization: Bearer`` for
     subsequent calls, including heartbeat) plus the ``output_link``.
 
-    Errors: 401 bad initData, 403 instance creation disabled, 404 instance/token
-    mismatch, 409 already claimed, 410 instance gone.
+    Errors: 401 bad initData / no credentials, 403 instance creation disabled,
+    404 instance/token mismatch, 409 already claimed, 410 instance gone.
     """
-    if not TELEGRAM_BOT_TOKEN:
+    if not TELEGRAM_BOT_TOKEN and session_user is None:
+        # No bot token AND no bearer: claim is only "disabled" when no auth
+        # backend exists at all; with link-auth configured this is simply a
+        # missing-credential client error.
+        if not await is_configured():
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="claim auth disabled"
+            )
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Telegram auth disabled"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="no credentials: supply telegram_init_data or a bearer token",
         )
 
     # 1. verify the claim token maps to this instance.
@@ -389,12 +557,21 @@ async def claim_instance(instance_id: int, body: ClaimIn):
             detail=f"instance already ended ({row['status']})",
         )
 
-    # 2. authenticate the user via Telegram initData.
-    tg_user = _authenticate_telegram(body.telegram_init_data)
-
-    user = await user_service.get_or_create_for_telegram(
-        tg_user["id"], tg_user.get("username")
-    )
+    # 2. authenticate the user: initData (legacy) or bearer session (link-auth).
+    if body.telegram_init_data and TELEGRAM_BOT_TOKEN:
+        tg_user = _authenticate_telegram(body.telegram_init_data)
+        user = await user_service.get_or_create_for_telegram(
+            tg_user["id"], tg_user.get("username")
+        )
+        tag: str | None = str(tg_user["id"])
+    elif session_user is not None:
+        user = session_user
+        tag = str(session_user["telegram_id"]) if session_user.get("telegram_id") else None
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="no credentials: supply telegram_init_data or a bearer token",
+        )
 
     # 3. privilege gate — temp instances are open, but claiming one (and thus
     # gaining the ability to heartbeat/extend its lifetime) requires the
@@ -408,14 +585,15 @@ async def claim_instance(instance_id: int, body: ClaimIn):
             detail="Instance creation is disabled for this account",
         )
 
-    # 3b. dedup: if this Telegram user already owns a *different* live app
-    # instance (e.g. they claimed a temp, then started another and are claiming
-    # this one too), stop the older one so there is at most one live app
-    # instance per user. The current instance (instance_id) is the keeper.
-    tag = str(tg_user["id"])
-    prior = await instance_service.find_active_app_session(tg_user["id"])
-    if prior is not None and prior["id"] != instance_id:
-        await process_manager.stop(prior["id"])
+    # 3b. dedup: if this user already owns a *different* live app instance
+    # (e.g. they claimed a temp, then started another and are claiming this one
+    # too), stop the older one so there is at most one live app instance per
+    # user. The current instance (instance_id) is the keeper. Lookup is by the
+    # app_session tag; users without a telegram id have no tag and skip this.
+    if tag is not None:
+        prior = await instance_service.find_active_app_session(int(tag))
+        if prior is not None and prior["id"] != instance_id:
+            await process_manager.stop(prior["id"])
 
     # 4. transfer ownership + reset the timeout to the default (5 min) lifetime.
     new_timeout_at = (_now_utc() + timedelta(seconds=DEFAULT_TIMEOUT_SECONDS)).isoformat()

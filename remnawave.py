@@ -52,6 +52,9 @@ USERS_PAGE_SIZE = 100
 PREVIEW_LIMIT = 200
 # Auto-sync: delay after startup before the first background run.
 SYNC_INITIAL_DELAY_SECONDS = 15.0
+# How long a subscription-token -> panel-user lookup stays cached (the app's
+# link-auth hits this on every sign-in; caching avoids re-paginating the panel).
+SUBSCRIPTION_CACHE_TTL_SECONDS = 300.0
 
 
 class RemnawaveError(Exception):
@@ -292,6 +295,11 @@ class RemnawaveMigrationService:
     retroactively grants it to users imported by earlier runs.
     """
 
+    def __init__(self):
+        # subscription token -> (expires_at_monotonic, panel user dict | None).
+        # See find_user_by_subscription / SUBSCRIPTION_CACHE_TTL_SECONDS.
+        self._sub_cache: dict[str, tuple[float, dict | None]] = {}
+
     async def list_squads(self) -> list[dict]:
         client = await get_client()
         squads = await client.get_internal_squads()
@@ -344,9 +352,58 @@ class RemnawaveMigrationService:
                     "expire_at": u.get("expireAt"),
                     "telegram_id": u.get("telegramId"),
                     "squad": squad_uuid,
+                    # Subscription identifiers: the token segment of a user's
+                    # subscription link (https://<panel>/sub/<token>). Used by
+                    # the app's link-auth; harmless for the sync/migrate paths.
+                    "subscription_id": str(u.get("subscriptionId") or "") or None,
+                    "subscription_user_name": str(u.get("subscriptionUserName") or "") or None,
                 }
                 seen[uuid] = entry
         return list(seen.values())
+
+    async def find_user_by_subscription(self, token: str) -> dict | None:
+        """Resolve a subscription token (the ``/sub/<token>`` segment of a
+        user's subscription link) to that panel user, or None when unknown.
+
+        Searches the same squads the auto-sync imports from. The panel user
+        dict carries the same keys as :meth:`fetch_users` entries. Results are
+        cached for SUBSCRIPTION_CACHE_TTL_SECONDS so repeated sign-ins don't
+        re-paginate the whole panel; a negative result is cached briefly too.
+        """
+        token = (token or "").strip()
+        if not token:
+            return None
+
+        now = asyncio.get_event_loop().time()
+        cached = self._sub_cache.get(token)
+        if cached is not None and now < cached[0]:
+            return cached[1]
+
+        opts = await get_sync_options()
+        squads = opts.get("squads") or []
+        if not squads:
+            raise RemnawaveError(
+                "no Remnawave squads configured — set them in Admin → Remnawave"
+            )
+
+        found: dict | None = None
+        # fetch_users dedupes by uuid across squads; match subscriptionId
+        # exactly first, then the (optional, user-chosen) subscriptionUserName
+        # case-insensitively — both appear as the token in subscription links.
+        users = await self.fetch_users(squads)
+        lowered = token.lower()
+        for u in users:
+            if u["subscription_id"] == token:
+                found = u
+                break
+        if found is None:
+            for u in users:
+                if (u["subscription_user_name"] or "").lower() == lowered:
+                    found = u
+                    break
+
+        self._sub_cache[token] = (now + SUBSCRIPTION_CACHE_TTL_SECONDS, found)
+        return found
 
     async def _classify(self, users: list[dict], only_active: bool) -> tuple[list[dict], dict]:
         """Split fetched users into (importable, counts)."""

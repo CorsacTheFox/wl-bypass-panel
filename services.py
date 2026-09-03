@@ -224,6 +224,10 @@ class UserService:
         row = await db.fetchone("SELECT id FROM users WHERE telegram_id=?", (telegram_id,))
         return dict(row) if row else None
 
+    async def find_by_external_ref(self, external_ref: str) -> dict | None:
+        row = await db.fetchone("SELECT id FROM users WHERE external_ref=?", (external_ref,))
+        return dict(row) if row else None
+
     async def find_by_username(self, username: str) -> dict | None:
         # username column is COLLATE NOCASE, so the lookup is case-insensitive.
         row = await db.fetchone("SELECT id FROM users WHERE username=?", (username,))
