@@ -56,7 +56,13 @@ from config import (
 from db import db
 from fastapi.security import HTTPAuthorizationCredentials
 from process_manager import process_manager
-from remnawave import RemnawaveError, get_sync_options, is_configured, remnawave_service
+from remnawave import (
+    RemnawaveError,
+    get_link_auth_squads,
+    get_sync_options,
+    is_configured,
+    remnawave_service,
+)
 from routers.quick import _quick_active_count, _resolve_quick_service
 from security import (
     TelegramAuthError,
@@ -265,6 +271,15 @@ async def _resolve_link_user(subscription: str) -> dict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Subscription not found — check the link or contact support",
+        )
+    # Squad allow-list (Admin → Remnawave → App sign-in squads). Empty = all
+    # squads allowed. Distinguished from "not found" so a restricted user
+    # gets an actionable message instead of a generic 401.
+    allowed_squads = await get_link_auth_squads()
+    if allowed_squads and panel_user.get("squad") not in allowed_squads:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your squad is not allowed to sign in via the app",
         )
     if str(panel_user.get("status") or "").upper() != "ACTIVE":
         raise HTTPException(

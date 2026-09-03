@@ -479,6 +479,26 @@
         </div>
       </div>
 
+      <!-- App sign-in squads (link-auth allow-list) -->
+      <div class="card p-5">
+        <div class="mb-4">
+          <h2 class="text-white font-semibold text-sm mb-1">App Sign-In Squads</h2>
+          <p class="text-xs text-gray-500">
+            Which squads may sign in to the Android app with their subscription link.
+            Empty selection = <span class="text-gray-300">all squads allowed</span>.
+          </p>
+        </div>
+
+        <div id="rw-app-squads" class="flex flex-wrap gap-2 mb-4">
+          <span class="text-xs text-gray-600">No squads loaded — click “Load squads” above.</span>
+        </div>
+
+        <div class="flex items-center gap-3 pt-4 border-t border-white/[0.04]">
+          <button type="button" id="btn-rw-save-app-squads" class="btn btn-primary px-5">Save App Squads</button>
+          <span class="text-xs text-gray-600" id="rw-app-squads-hint">Applies immediately to new sign-ins.</span>
+        </div>
+      </div>
+
       <!-- Migration result -->
       <div id="rw-result-card" class="card overflow-hidden hidden">
         <div class="px-5 py-3.5 border-b border-white/[0.04] flex items-center justify-between">
@@ -1311,9 +1331,35 @@ document.addEventListener('click', async (e) => {
    ========================================================================= */
 let rwSquadsLoaded = [];   // [{uuid, name}] last fetched from the panel
 let rwLastSelected = [];   // squad uuids to restore after a re-load
+let rwAppSelected = [];    // squads allowed for app sign-in (link-auth)
 
 function rwSelectedSquads() {
   return Array.from($$('[data-rw-squad]:checked')).map(c => c.dataset.rwSquad);
+}
+
+function rwSelectedAppSquads() {
+  return Array.from($$('[data-rw-app-squad]:checked')).map(c => c.dataset.rwAppSquad);
+}
+
+/* Render one checkbox-chip group (shared by the import and app-sign-in boxes). */
+function rwRenderSquadChips(box, dataAttr, selected) {
+  if (!rwSquadsLoaded.length) return;
+  box.innerHTML = '';
+  rwSquadsLoaded.forEach(s => {
+    const chip = el('label', {
+      class: 'flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/[0.06] cursor-pointer text-sm text-gray-300 hover:border-violet-500/40 transition-colors',
+      title: s.uuid,
+    });
+    const cb = el('input', {
+      type: 'checkbox',
+      [dataAttr]: s.uuid,
+      class: 'w-3.5 h-3.5 rounded border-gray-600 bg-surface-900 accent-violet-600',
+    });
+    if (selected.has(s.uuid)) cb.checked = true;
+    chip.appendChild(cb);
+    chip.appendChild(document.createTextNode(s.name || s.uuid));
+    box.appendChild(chip);
+  });
 }
 
 async function refreshRemnawave() {
@@ -1329,6 +1375,10 @@ async function refreshRemnawave() {
     $('#rw-opt-active').checked = cfg.auto_sync.only_active !== false;
     $('#rw-opt-grant').checked = cfg.auto_sync.grant_create_instances !== false;
     $('#rw-opt-slots').value = cfg.auto_sync.max_concurrent ?? 3;
+    rwAppSelected = cfg.link_auth_squads || [];
+    $('#rw-app-squads-hint').textContent = rwAppSelected.length
+      ? 'Restricted to ' + rwAppSelected.length + ' squad(s).'
+      : 'Empty = all squads allowed.';
     rwRenderLastSync(cfg.last_sync);
     // Auto-load squads once per session when the panel is configured.
     if (cfg.configured && rwSquadsLoaded.length === 0) {
@@ -1396,9 +1446,10 @@ $('#btn-rw-test').addEventListener('click', async () => {
   } finally { btn.disabled = false; btn.textContent = 'Test'; }
 });
 
-/* --- Load squads into checkbox chips --- */
+/* --- Load squads into checkbox chips (import + app sign-in groups) --- */
 async function rwLoadSquads() {
   const box = $('#rw-squads');
+  const appBox = $('#rw-app-squads');
   box.innerHTML = '<span class="text-xs text-gray-600">Loading squads\u2026</span>';
   try {
     const squads = await api.get('/api/admin/remnawave/squads');
@@ -1406,31 +1457,39 @@ async function rwLoadSquads() {
     const selected = new Set(rwSelectedSquads().length ? rwSelectedSquads() : rwLastSelected);
     if (!squads.length) {
       box.innerHTML = '<span class="text-xs text-gray-600">Panel has no squads.</span>';
+      appBox.innerHTML = '<span class="text-xs text-gray-600">Panel has no squads.</span>';
       return;
     }
-    box.innerHTML = '';
-    squads.forEach(s => {
-      const chip = el('label', {
-        class: 'flex items-center gap-2 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/[0.06] cursor-pointer text-sm text-gray-300 hover:border-violet-500/40 transition-colors',
-        title: s.uuid,
-      });
-      const cb = el('input', {
-        type: 'checkbox',
-        'data-rw-squad': s.uuid,
-        class: 'w-3.5 h-3.5 rounded border-gray-600 bg-surface-900 accent-violet-600',
-      });
-      if (selected.has(s.uuid)) cb.checked = true;
-      chip.appendChild(cb);
-      chip.appendChild(document.createTextNode(s.name || s.uuid));
-      box.appendChild(chip);
-    });
+    rwRenderSquadChips(box, 'data-rw-squad', selected);
+    rwRenderSquadChips(appBox, 'data-rw-app-squad', new Set(rwAppSelected));
   } catch (err) {
     box.innerHTML = '<span class="text-xs text-red-400">' + esc(err.message) + '</span>';
   }
 }
 $('#btn-rw-load-squads').addEventListener('click', () => {
   rwLastSelected = rwSelectedSquads();
+  rwAppSelected = rwSelectedAppSquads();
   rwLoadSquads();
+});
+
+/* --- Save the app sign-in allow-list --- */
+$('#btn-rw-save-app-squads').addEventListener('click', async () => {
+  const btn = $('#btn-rw-save-app-squads');
+  btn.disabled = true;
+  try {
+    const cfg = await api.request('/api/admin/remnawave/config', {
+      method: 'PUT',
+      body: { link_auth_squads: rwSelectedAppSquads() },
+    });
+    rwAppSelected = cfg.link_auth_squads || [];
+    $('#rw-app-squads-hint').textContent = rwAppSelected.length
+      ? 'Restricted to ' + rwAppSelected.length + ' squad(s).'
+      : 'Empty = all squads allowed.';
+    toast(rwAppSelected.length
+      ? 'App sign-in restricted to ' + rwAppSelected.length + ' squad(s)'
+      : 'App sign-in: all squads allowed');
+  } catch (err) { toast(err.message, 'err'); }
+  finally { btn.disabled = false; }
 });
 
 /* --- Result rendering (shared by preview & migrate) --- */

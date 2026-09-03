@@ -199,6 +199,9 @@ CONF_SYNC_ONLY_ACTIVE = "remnawave_sync_only_active"
 CONF_SYNC_GRANT_CREATE = "remnawave_sync_grant_create"
 CONF_SYNC_MAX_CONCURRENT = "remnawave_sync_max_concurrent"
 CONF_LAST_SYNC = "remnawave_last_sync"                    # JSON run summary
+# Squads allowed to sign in to the app via subscription link-auth
+# (JSON array of uuids; empty = ALL squads allowed).
+CONF_LINK_AUTH_SQUADS = "remnawave_link_auth_squads"
 
 
 def mask_key(key: str) -> str:
@@ -236,6 +239,24 @@ async def is_configured() -> bool:
 
 async def get_client() -> RemnawaveClient:
     return RemnawaveClient(await get_panel_url(), await get_api_key())
+
+
+async def get_link_auth_squads() -> list[str]:
+    """Squads allowed to sign in to the app via subscription link-auth.
+
+    Empty list = no restriction (every panel squad may sign in). Set from the
+    admin UI (Admin → Remnawave → App sign-in squads).
+    """
+    raw = await _get_setting(CONF_LINK_AUTH_SQUADS)
+    try:
+        squads = json.loads(raw) if raw else []
+    except ValueError:
+        squads = []
+    return [s for s in squads if isinstance(s, str)]
+
+
+async def set_link_auth_squads(squads: list[str]) -> None:
+    await _set_setting(CONF_LINK_AUTH_SQUADS, json.dumps(list(squads)))
 
 
 async def get_sync_options() -> dict:
@@ -352,9 +373,14 @@ class RemnawaveMigrationService:
                     "expire_at": u.get("expireAt"),
                     "telegram_id": u.get("telegramId"),
                     "squad": squad_uuid,
-                    # Subscription identifiers: the token segment of a user's
-                    # subscription link (https://<panel>/sub/<token>). Used by
-                    # the app's link-auth; harmless for the sync/migrate paths.
+                    # Subscription identifiers, matched against the token the
+                    # user pastes into the app (link-auth). Field names differ
+                    # across panel versions:
+                    #   shortUuid / subscriptionUrl — current Remnawave builds
+                    #       (custom sub domains serve https://<host>/<shortUuid>)
+                    #   subscriptionId / subscriptionUserName — older builds.
+                    "short_uuid": str(u.get("shortUuid") or "") or None,
+                    "subscription_url": str(u.get("subscriptionUrl") or "") or None,
                     "subscription_id": str(u.get("subscriptionId") or "") or None,
                     "subscription_user_name": str(u.get("subscriptionUserName") or "") or None,
                 }
@@ -362,47 +388,49 @@ class RemnawaveMigrationService:
         return list(seen.values())
 
     async def find_user_by_subscription(self, token: str) -> dict | None:
-        """Resolve a subscription token (the ``/sub/<token>`` segment of a
-        user's subscription link) to that panel user, or None when unknown.
+        """Resolve a subscription token (the token segment of a user's
+        subscription link, e.g. ``https://<sub-domain>/<shortUuid>``) to that
+        panel user, or None when unknown.
 
-        Searches the same squads the auto-sync imports from. The panel user
-        dict carries the same keys as :meth:`fetch_users` entries. Results are
-        cached for SUBSCRIPTION_CACHE_TTL_SECONDS so repeated sign-ins don't
-        re-paginate the whole panel; a negative result is cached briefly too.
+        Searches the squads allowed for app sign-in
+        (:func:`get_link_auth_squads`) — every squad when that list is empty.
+        The panel-user dict carries the same keys as :meth:`fetch_users`
+        entries (including ``squad``, so the caller can enforce the allow-list
+        itself). Results are cached for SUBSCRIPTION_CACHE_TTL_SECONDS so
+        repeated sign-ins don't re-paginate the whole panel; a negative result
+        is cached briefly too.
         """
         token = (token or "").strip()
         if not token:
             return None
 
-        now = asyncio.get_event_loop().time()
+        loop = asyncio.get_event_loop()
         cached = self._sub_cache.get(token)
-        if cached is not None and now < cached[0]:
+        if cached is not None and loop.time() < cached[0]:
             return cached[1]
 
-        opts = await get_sync_options()
-        squads = opts.get("squads") or []
-        if not squads:
-            raise RemnawaveError(
-                "no Remnawave squads configured — set them in Admin → Remnawave"
-            )
+        allowed = await get_link_auth_squads()
+        squads = allowed if allowed else [s["uuid"] for s in await self.list_squads()]
 
         found: dict | None = None
-        # fetch_users dedupes by uuid across squads; match subscriptionId
-        # exactly first, then the (optional, user-chosen) subscriptionUserName
-        # case-insensitively — both appear as the token in subscription links.
+        # fetch_users dedupes by uuid across squads. Match priority mirrors the
+        # panel versions' link shapes: current builds put the shortUuid in the
+        # subscription URL path; older ones used subscriptionId or a
+        # user-chosen subscriptionUserName.
         users = await self.fetch_users(squads)
-        lowered = token.lower()
         for u in users:
-            if u["subscription_id"] == token:
+            if u["short_uuid"] == token or u["subscription_id"] == token:
                 found = u
                 break
         if found is None:
+            lowered = token.lower()
             for u in users:
-                if (u["subscription_user_name"] or "").lower() == lowered:
+                url_token = (u["subscription_url"] or "").rstrip("/").rsplit("/", 1)[-1]
+                if url_token == token or (u["subscription_user_name"] or "").lower() == lowered:
                     found = u
                     break
 
-        self._sub_cache[token] = (now + SUBSCRIPTION_CACHE_TTL_SECONDS, found)
+        self._sub_cache[token] = (loop.time() + SUBSCRIPTION_CACHE_TTL_SECONDS, found)
         return found
 
     async def _classify(self, users: list[dict], only_active: bool) -> tuple[list[dict], dict]:

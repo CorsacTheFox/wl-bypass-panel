@@ -17,6 +17,7 @@ from remnawave import (
     CONF_AUTO_SYNC_ENABLED,
     CONF_AUTO_SYNC_INTERVAL,
     CONF_AUTO_SYNC_SQUADS,
+    CONF_LINK_AUTH_SQUADS,
     CONF_PANEL_URL,
     CONF_SYNC_GRANT_CREATE,
     CONF_SYNC_MAX_CONCURRENT,
@@ -24,6 +25,7 @@ from remnawave import (
     RemnawaveError,
     get_api_key,
     get_last_sync,
+    get_link_auth_squads,
     get_panel_url,
     get_sync_options,
     mask_key,
@@ -50,6 +52,9 @@ class RemnawaveConfigUpdate(BaseModel):
     sync_only_active: bool | None = None
     sync_grant_create: bool | None = None
     sync_max_concurrent: int | None = Field(default=None, ge=0, le=10)
+    # Squads allowed to sign in via the app's subscription link-auth.
+    # Empty list = all squads allowed; None = leave unchanged.
+    link_auth_squads: list[str] | None = None
 
 
 @router.get("/config")
@@ -62,6 +67,7 @@ async def get_config():
         "api_key_masked": mask_key(key),
         "configured": bool(url and key),
         "auto_sync": await get_sync_options(),
+        "link_auth_squads": await get_link_auth_squads(),
         "last_sync": await get_last_sync(),
     }
 
@@ -84,6 +90,8 @@ async def put_config(body: RemnawaveConfigUpdate):
         await _set_setting(CONF_SYNC_GRANT_CREATE, "1" if body.sync_grant_create else "0")
     if body.sync_max_concurrent is not None:
         await _set_setting(CONF_SYNC_MAX_CONCURRENT, str(body.sync_max_concurrent))
+    if body.link_auth_squads is not None:
+        await _set_setting(CONF_LINK_AUTH_SQUADS, json.dumps(body.link_auth_squads))
     return await get_config()
 
 
