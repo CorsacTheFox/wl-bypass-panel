@@ -44,7 +44,7 @@
 # NOTE on updates (re-run over an existing $APP_DIR): the SQLite database
 # (data/), the live .env (including WB_APP_TOKEN / WB_TELEGRAM_BOT_TOKEN) and
 # uploaded binaries are PRESERVED; the DB is additionally backed up to
-# data/backups/ first. Tokens are never removed from .env on update.
+# /var/backups/ first. Tokens are never removed from .env on update.
 # =============================================================================
 set -euo pipefail
 
@@ -218,21 +218,24 @@ if $IS_UPDATE; then
         ok "[UPDATE] No child processes running"
     fi
 
-    # 3. Backup SQLite database (keep last 3 backups).
+    # 3. Backup SQLite database (keep last 3 backups). Stored OUTSIDE the app
+    #    dir (/var/backups) so that no failure inside $APP_DIR — wipe bugs,
+    #    bad deploys — can ever take the backups down with it.
     DB_PATH="$APP_DIR/data/app.db"
     if [[ -f "$DB_PATH" ]]; then
-        BACKUP_DIR="$APP_DIR/data/backups"
+        BACKUP_DIR="/var/backups/${SERVICE_NAME}"
         mkdir -p "$BACKUP_DIR"
         TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
         BACKUP_FILE="$BACKUP_DIR/app.db.${TIMESTAMP}.bak"
         log "[UPDATE] Backing up database ..."
         cp -a "$DB_PATH" "$BACKUP_FILE"
-        ok "[UPDATE] Database backed up to $(basename "$BACKUP_FILE")"
+        chmod 600 "$BACKUP_FILE"
+        ok "[UPDATE] Database backed up to $BACKUP_FILE"
 
         # Rotate: keep only the 3 most recent backups.
         ls -1t "$BACKUP_DIR"/app.db.*.bak 2>/dev/null | tail -n +4 | xargs -r rm -f
         BACKUP_COUNT="$(ls -1 "$BACKUP_DIR"/app.db.*.bak 2>/dev/null | wc -l)"
-        log "[UPDATE] $BACKUP_COUNT backup(s) retained in data/backups/"
+        log "[UPDATE] $BACKUP_COUNT backup(s) retained in $BACKUP_DIR/"
     else
         ok "[UPDATE] No database found — skipping backup"
     fi
@@ -251,6 +254,7 @@ apt-get install -y -qq \
     sqlite3 \
     ufw curl ca-certificates gnupg \
     proxychains4 \
+    rsync \
     > /dev/null
 
 if [[ "$PROXY" == "nginx" ]]; then
@@ -303,23 +307,29 @@ if command -v rsync >/dev/null 2>&1; then
         --exclude '.env' --exclude 'binaries' \
         "$SRC_DIR"/ "$APP_DIR"/
 else
-    # rsync absent: mirror source by hand, but PRESERVE data/, .env and
-    # binaries/ — move them aside, wipe, copy, restore. Without this the cp
-    # fallback would delete the live database and config on every re-run.
+    # rsync absent: mirror source by hand, but PRESERVE data/, .env, binaries/
+    # and .venv. CRITICAL: the staging dir lives OUTSIDE $APP_DIR (a sibling),
+    # because an earlier version staged the preserve-copies INSIDE the app dir
+    # as dot-files and the `rm -rf ... /.*` wipe below deleted them together
+    # with everything else. The wipe itself uses `find` (no shell glob), so
+    # nothing outside $APP_DIR can ever be touched.
+    STAGE="$(mktemp -d "${APP_DIR%/}.preserve.XXXXXX")"
     declare -a PRESERVE=()
-    for item in data .env binaries; do
+    for item in data .env binaries .venv; do
         if [[ -e "$APP_DIR/$item" ]]; then
-            mv "$APP_DIR/$item" "$APP_DIR/.preserve.$$.${item//\//_}"
+            mv "$APP_DIR/$item" "$STAGE/$item"
             PRESERVE+=("$item")
         fi
     done
-    rm -rf "$APP_DIR"/* "$APP_DIR"/.* 2>/dev/null || true
+    find "$APP_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
     cp -a "$SRC_DIR"/. "$APP_DIR"/
     find "$APP_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} +
     for item in "${PRESERVE[@]}"; do
-        rm -rf "$APP_DIR/$item" 2>/dev/null || true
-        mv "$APP_DIR/.preserve.$$.${item//\//_}" "$APP_DIR/$item"
+        rm -rf "$APP_DIR/$item"
+        mv "$STAGE/$item" "$APP_DIR/$item" \
+            || die "FATAL: could not restore '$item' from $STAGE — it is still safe there, resolve manually"
     done
+    rmdir "$STAGE" 2>/dev/null || true
 fi
 mkdir -p "$APP_DIR/data" "$APP_DIR/binaries"
 ok "App files copied"
@@ -658,7 +668,7 @@ fi
 echo "  Proxy:       $PROXY"
 echo
 if $IS_UPDATE; then
-    echo "  NOTE: on UPDATE, database was backed up to $APP_DIR/data/backups/"
+    echo "  NOTE: on UPDATE, database was backed up to /var/backups/${SERVICE_NAME}/"
 else
     echo "  NOTE: re-running this installer RESETS the admin password to the one"
     echo "  shown above / stored in $APP_DIR/.env (by design — see README)."
