@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from config import ADMIN_PASSWORD, ADMIN_USERNAME, BASE_DIR, ensure_dirs
+from config import ADMIN_PASSWORD, ADMIN_USERNAME, APP_CERT_SHA256, APP_PACKAGE, BASE_DIR, ensure_dirs
 from db import db
 from process_manager import process_manager
 from remnawave import remnawave_sync
@@ -223,13 +223,43 @@ async def tg_auth_page():
     return {"detail": "tg-auth page not found"}
 
 
-# Android handoff page: the https target the /tg-auth bridge page redirects to
-# (https://<domain>/tginit?initdata=...). When Android does not auto-open the
-# app through the verified App Link (unverified assetlinks.json, browser
-# chooser, iOS/Desktop Telegram), this server-rendered page completes the
-# handoff by navigating to the app's custom scheme
-# (corsconnect://tginit?initdata=...) instead of falling through to the SPA
-# dashboard (the previous "broken page" behaviour).
+# Android App Links verification
+# (https://developer.android.com/training/app-links/verify-site-associations).
+# Android 12 opened unverified https App Links through an app-chooser; Android
+# 15+/16 hard-require this statement list — without it
+# https://<domain>/tginit?initdata=... always lands in the browser and the
+# app never receives the Telegram initData (the "works on 12, dead on 16"
+# symptom). Must be served over HTTPS as application/json with HTTP 200 and
+# no redirects.
+@app.get("/.well-known/assetlinks.json")
+async def assetlinks():
+    if not APP_PACKAGE or not APP_CERT_SHA256:
+        raise HTTPException(status_code=404, detail="assetlinks disabled")
+    fingerprints = [
+        "".join(fp.split()).lower()
+        for fp in APP_CERT_SHA256.split(",")
+        if fp.strip()
+    ]
+    return [
+        {
+            "relation": ["delegate_permission/common.handle_all_urls"],
+            "target": {
+                "namespace": "android_app",
+                "package_name": APP_PACKAGE,
+                "sha256_cert_fingerprints": fingerprints,
+            },
+        }
+    ]
+
+
+# Android handoff page: the https App Link target the /tg-auth bridge page
+# redirects to (https://<domain>/tginit?initdata=...). Once the App Link is
+# verified (see /.well-known/assetlinks.json above) Android opens the app
+# directly and this page is never seen; if it IS seen (desktop, not installed,
+# verification pending), it offers a manual retry of the same https link
+# instead of falling through to the SPA dashboard (the previous "broken page"
+# behaviour). NOTE: no corsconnect://tginit custom-scheme attempt here — the
+# app's manifest has no such intent-filter.
 def _escape_attr(s: str) -> str:
     return (
         (s or "")
@@ -317,11 +347,12 @@ def _tg_init_html_page(init_data: str) -> str:
         </svg>
       </div>
 
-      <!-- Opening / manual-open state -->
+      <!-- Ready state: the verified App Link normally opens the app before
+           this page renders; the button re-fires the same App Link. -->
       <div id="view-loading">
         <div class="spinner"></div>
-        <h1>Opening Cors.Connect…</h1>
-        <p class="sub">Returning to the app with your Telegram session.</p>
+        <h1>Returning to Cors.Connect…</h1>
+        <p class="sub">Tap the button below if the app didn't open automatically.</p>
         <button id="btn-open" class="btn-action">Open App</button>
       </div>
 
@@ -354,40 +385,21 @@ def _tg_init_html_page(init_data: str) -> str:
         btnRetry.classList.toggle("hidden", !showRetry);
       }
 
-      function openApp() {
-        // Deep-link contract (must match the Android manifest):
-        // corsconnect://tginit?initdata=<urlencoded initData>
-        window.location.href = "corsconnect://tginit?initdata=" + encodeURIComponent(raw);
-      }
-
-      btnOpen.addEventListener("click", openApp);
-      btnRetry.addEventListener("click", openApp);
+      // On Android the verified App Link opens the app BEFORE this page
+      // renders, so no auto-navigation here (an automatic retry would just
+      // reload-loop in a browser). The button re-fires the same https App
+      // Link — after verification lands (or on a device where the chooser
+      // appeared) that hands off to the app.
+      btnOpen.addEventListener("click", function () {
+        window.location.replace(window.location.href);
+      });
+      btnRetry.addEventListener("click", function () {
+        window.location.replace(window.location.href);
+      });
 
       if (!raw || raw.indexOf("hash=") === -1) {
         showError("Link expired", "This sign-in link is incomplete. Start again from the Cors.Connect app.", false);
-        return;
       }
-
-      // Try the app immediately; Chrome fires the intent for custom schemes
-      // on navigation (a chooser may appear when the App Link is unverified).
-      openApp();
-
-      // If the page is still visible shortly after, the app did not take the
-      // link — offer a manual button (needs a user gesture on some browsers).
-      setTimeout(function () {
-        if (!document.hidden) {
-          showError("App didn't open?", "Tap below to open Cors.Connect, or return to the app and sign in again.", true);
-        }
-      }, 1500);
-
-      // The app opened (page hidden): restore the neutral view so a stale
-      // "didn't open" message is not shown when the user comes back.
-      document.addEventListener("visibilitychange", function () {
-        if (document.hidden) {
-          errorView.classList.add("hidden");
-          loadingView.classList.remove("hidden");
-        }
-      });
     })();
   </script>
 </body>

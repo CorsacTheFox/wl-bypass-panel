@@ -548,6 +548,11 @@
 const TOKEN_KEY = 'wb_token';
 let currentUser = null;   // { id, username, role, max_concurrent }
 let currentTab = 'dashboard';
+// Telegram Mini App (bot) context — true when the page is opened from a
+// Telegram button/mini app and the SDK injected a signed initData. The bot
+// WebView is the CLIENT entry point: admin panels are desktop-oriented and
+// render broken there, so they are hidden regardless of the user's role.
+const IS_TMA = !!(window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData);
 
 const api = {
   token: localStorage.getItem(TOKEN_KEY) || null,
@@ -842,8 +847,10 @@ function buildNav() {
   });
   nav.appendChild(dashTab);
 
-  // Admin tab — admins only
-  if (currentUser.role === 'admin') {
+  // Admin tab — admins only, and never inside the Telegram Mini App (the
+  // bot's app button opens "/", but there the user must always see the
+  // client page, not a desktop admin dashboard).
+  if (currentUser.role === 'admin' && !IS_TMA) {
     const adminTab = el('button', {
       class: 'btn btn-ghost text-xs py-1.5 px-3 border-b-2 transition-colors',
       text: 'Admin Panel',
@@ -1959,9 +1966,13 @@ async function openServiceModal(s = {}) {
       }
       return;
     } catch (err) {
-      // Auth itself failed — show why and keep going to the login screen.
+      // Auth itself failed. Inside Telegram a cached web token must NEVER be
+      // used as a fallback: on a shared device it belongs to another (e.g.
+      // admin) web session and would render the admin dashboard in the bot.
       console.warn('Telegram auth failed:', err.message);
+      api.logout();
       toast('Telegram auth failed: ' + err.message, 'err');
+      return;
     }
   }
 

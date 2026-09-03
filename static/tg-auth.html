@@ -72,6 +72,15 @@
       background: #6d28d9;
       transform: scale(0.98);
     }
+    /* Лёгкий pulse: кнопка — единственное действие на странице, её должно
+       быть видно сразу (пользователь не успевал её заметить до редиректа). */
+    #btn-return {
+      animation: pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 4px 14px rgba(124, 58, 237, 0.35); }
+      50%      { box-shadow: 0 4px 22px rgba(124, 58, 237, 0.75); }
+    }
   </style>
 </head>
 <body>
@@ -90,11 +99,15 @@
         <button id="btn-return" class="btn-action">Return to App</button>
       </div>
 
-      <!-- Error state -->
+      <!-- Error state: no initData after waiting. Most often this means the bot
+           is not started yet (START not pressed) or a non-standard Telegram
+           client — offer a direct link that starts the bot and relaunches the
+           Mini App in one tap. -->
       <div id="view-error" class="error hidden">
-        <h1 id="error-title">Open in Telegram</h1>
-        <p class="sub" id="error-message">This page only works inside the Telegram app.</p>
-        <p class="state-line">Open <strong>@wl_cors_bot</strong> from Telegram to sign in.</p>
+        <h1 id="error-title">Telegram session not found</h1>
+        <p class="sub" id="error-message">The bot must be started first.</p>
+        <a id="btn-start-bot" class="btn-action" href="https://t.me/wl_cors_bot?startapp=auth">Start @wl_cors_bot</a>
+        <p class="state-line">Press <strong>START</strong> if asked — the sign-in page reopens automatically.</p>
       </div>
     </div>
   </div>
@@ -107,9 +120,10 @@
       var HTTPS_HOST = "https://beta.cors-fox.cc/tginit";
       var PARAM = "initdata";
       // Сколько ждать появления initData, прежде чем решить, что страница
-      // открыта не в Telegram: SDK грузится с telegram.org и на медленной
-      // сети/холодном старте WebView может опаздывать на секунды.
-      var WAIT_SDK_MS = 3000;
+      // открыта не в Telegram (или бот не запущен): SDK грузится с
+      // telegram.org и на медленной сети / нестандартных клиентах может
+      // опаздывать на несколько секунд.
+      var WAIT_SDK_MS = 5000;
       var POLL_MS = 200;
 
       var loadingView = document.getElementById("view-loading");
@@ -185,14 +199,11 @@
           window.location.href = targetUrl;
         };
 
-        // Кнопка остаётся рабочей: повторное нажатие = повторная попытка.
+        // Переход ТОЛЬКО по нажатию кнопки. Авто-редирект через openLink
+        // уводил (а на части клиентов закрывал) WebView раньше, чем
+        // пользователь успевал увидеть кнопку; навигация по жесту
+        // пользователя надёжнее доходит до Intent приложения.
         btnReturn.addEventListener("click", doRedirect);
-
-        // Авто-редирект через 400ms для удобства. Страницу НЕ закрываем
-        // автоматически: wa.close() сразу после openLink срывал ещё не
-        // обработанный Intent на Android и прятал кнопку раньше, чем
-        // пользователь успевал её увидеть.
-        setTimeout(doRedirect, 400);
       }
 
       function start() {
@@ -204,8 +215,8 @@
           }
         } catch (e) {}
 
-        // initData может появиться с задержкой. Опрашиваем пару секунд и
-        // только потом показываем "Open in Telegram" — раньше страница
+        // initData может появиться с задержкой. Опрашиваем до WAIT_SDK_MS и
+        // только потом показываем кнопку запуска бота — раньше страница
         // ошибочно считала, что она открыта не в Telegram, и не редиректила.
         var waited = 0;
         var timer = setInterval(function () {
@@ -218,7 +229,10 @@
           waited += POLL_MS;
           if (waited >= WAIT_SDK_MS) {
             clearInterval(timer);
-            showError("Open in Telegram", "This page only works inside the Telegram app.");
+            showError(
+              "Telegram session not found",
+              "Bot not started or unsupported client. Use the button below to start @wl_cors_bot."
+            );
           }
         }, POLL_MS);
       }

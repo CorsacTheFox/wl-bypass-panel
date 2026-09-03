@@ -55,6 +55,20 @@ QUICK_DEFAULT_SERVICE_ID = int(os.getenv("WB_QUICK_DEFAULT_SERVICE_ID", "0"))
 # the X-App-Token header. When empty (default), the whole /api/app router is
 # disabled (returns 404), mirroring the QUICK_TOKEN / TELEGRAM_BOT_TOKEN gating.
 APP_TOKEN = os.getenv("WB_APP_TOKEN", "")
+
+# Android App Links verification (/.well-known/assetlinks.json). Android 12
+# still let unverified https links open via an app-chooser, but Android 15+/16
+# hard-require a verified statement list — without it the
+# https://<domain>/tginit?initdata=... callback always lands in the browser and
+# the app never receives the Telegram initData. Defaults are the Cors.Connect
+# app (applicationId + SHA-256 of its signing cert); override via env if the
+# signing key ever changes. Multiple fingerprints: comma-separated, colons
+# optional.
+APP_PACKAGE = os.getenv("WB_APP_PACKAGE", "cc.cors.connect")
+APP_CERT_SHA256 = os.getenv(
+    "WB_APP_CERT_SHA256",
+    "AB:E4:6D:43:49:90:68:5A:91:34:70:69:A7:42:FA:7C:9D:D3:77:2D:80:CF:D1:57:05:4A:4D:15:E9:00:DA:4D",
+)
 # Lifetime of an unauthenticated (temporary) instance created by the Android
 # app, in seconds. This window lets the user complete Telegram authorization
 # while the spawned service is already running. Default 300s = 5 minutes

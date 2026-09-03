@@ -264,7 +264,15 @@ class UserService:
             username = self._sanitize_tg_username(username)
             match = await self.find_by_username(username)
             if match:
-                return await self.link_telegram(match["id"], telegram_id)
+                matched = await self.get(match["id"])
+                # Never auto-link Telegram onto an admin account: a TG handle
+                # colliding with an admin username would silently hand out the
+                # admin role (and the admin dashboard) inside the bot. The
+                # colliding name is dropped so auto-create below can't clash
+                # with the admin's unique username either.
+                if matched["role"] != "admin":
+                    return await self.link_telegram(match["id"], telegram_id)
+                username = None
 
         # 3. auto-create
         return await self.create_client(
