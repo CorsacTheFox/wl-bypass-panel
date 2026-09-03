@@ -40,6 +40,11 @@
 # "I changed the password but still can't log in" trap, this installer ALWAYS
 # re-syncs the admin row's password hash to whatever ends up in .env. Re-running
 # the installer therefore resets the admin password — by design.
+#
+# NOTE on updates (re-run over an existing $APP_DIR): the SQLite database
+# (data/), the live .env (including WB_APP_TOKEN / WB_TELEGRAM_BOT_TOKEN) and
+# uploaded binaries are PRESERVED; the DB is additionally backed up to
+# data/backups/ first. Tokens are never removed from .env on update.
 # =============================================================================
 set -euo pipefail
 
@@ -110,6 +115,7 @@ ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 QUICK_TOKEN="${QUICK_TOKEN:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+APP_TOKEN="${APP_TOKEN:-}"
 
 # When updating, seed defaults from the existing .env so the user can just
 # press Enter through all prompts without re-entering everything.
@@ -121,6 +127,7 @@ if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
     APP_PORT="${APP_PORT:-$(_env_get WB_PORT)}"
     QUICK_TOKEN="${QUICK_TOKEN:-$(_env_get WB_QUICK_TOKEN)}"
     TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-$(_env_get WB_TELEGRAM_BOT_TOKEN)}"
+    APP_TOKEN="${APP_TOKEN:-$(_env_get WB_APP_TOKEN)}"
 fi
 
 echo
@@ -173,7 +180,8 @@ else
 fi
 
 prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
-prompt TELEGRAM_BOT_TOKEN "Telegram Mini App bot token (blank = disabled)" "$TELEGRAM_BOT_TOKEN"
+prompt TELEGRAM_BOT_TOKEN "Telegram Mini App bot token (blank = keep current on update / disabled on fresh install)" "$TELEGRAM_BOT_TOKEN"
+prompt APP_TOKEN "Android app API token, X-App-Token (blank = keep current on update / disabled on fresh install)" "$APP_TOKEN"
 
 # #############################################################################
 # 1b. Pre-flight: stop service, kill child processes, backup database (update only)
@@ -283,25 +291,35 @@ fi
 log "Installing app into $APP_DIR ..."
 mkdir -p "$APP_DIR"
 # Copy app code (rsync keeps the dir; --delete mirrors source minus ignores).
+# NOTE the excludes that keep SERVER-ONLY state intact on updates:
+#   data/     — SQLite DB, cookies, logs, backups
+#   .env      — live config incl. WB_APP_TOKEN (deleting it would disable the
+#               whole /api/app router and break the Android flow)
+#   binaries/ — uploaded service binaries
 if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete \
         --exclude '.venv' --exclude 'data' --exclude '__pycache__' \
         --exclude '.git' --exclude '*.pyc' --exclude '.DS_Store' \
+        --exclude '.env' --exclude 'binaries' \
         "$SRC_DIR"/ "$APP_DIR"/
 else
-    # rsync absent: mirror source by hand, but PRESERVE data/ (DB, cookies,
-    # logs) — move it aside, wipe, copy, restore. Without this the cp fallback
-    # would delete data/app.db on every re-run of the installer.
-    if [[ -d "$APP_DIR/data" ]]; then
-        mv "$APP_DIR/data" "$APP_DIR/.data.preserve.$$"
-    fi
+    # rsync absent: mirror source by hand, but PRESERVE data/, .env and
+    # binaries/ — move them aside, wipe, copy, restore. Without this the cp
+    # fallback would delete the live database and config on every re-run.
+    declare -a PRESERVE=()
+    for item in data .env binaries; do
+        if [[ -e "$APP_DIR/$item" ]]; then
+            mv "$APP_DIR/$item" "$APP_DIR/.preserve.$$.${item//\//_}"
+            PRESERVE+=("$item")
+        fi
+    done
     rm -rf "$APP_DIR"/* "$APP_DIR"/.* 2>/dev/null || true
     cp -a "$SRC_DIR"/. "$APP_DIR"/
     find "$APP_DIR" -type d -name '__pycache__' -prune -exec rm -rf {} +
-    if [[ -d "$APP_DIR/.data.preserve.$$" ]]; then
-        rm -rf "$APP_DIR/data" 2>/dev/null || true
-        mv "$APP_DIR/.data.preserve.$$" "$APP_DIR/data"
-    fi
+    for item in "${PRESERVE[@]}"; do
+        rm -rf "$APP_DIR/$item" 2>/dev/null || true
+        mv "$APP_DIR/.preserve.$$.${item//\//_}" "$APP_DIR/$item"
+    done
 fi
 mkdir -p "$APP_DIR/data" "$APP_DIR/binaries"
 ok "App files copied"
@@ -363,6 +381,20 @@ upsert_key() {
     fi
 }
 
+# add_if_missing <KEY> <VALUE> — append KEY=VALUE only when the key is absent.
+# Used for keys that have safe defaults and may be hand-tuned by the operator:
+# an update must never clobber them.
+add_if_missing() {
+    local key="$1" val="$2" file="$APP_DIR/.env"
+    [[ -n "$val" ]] || return 0
+    grep -qE "^${key}=" "$file" || printf '%s=%s\n' "$key" "$val" >> "$file"
+}
+
+# Values for App Links verification come from the shipped .env.example so the
+# fingerprint lives in exactly one place. Env overrides win, then existing
+# .env, then the template default.
+_env_def() { grep -E "^${1}=" "$APP_DIR/.env.example" 2>/dev/null | head -1 | cut -d= -f2- || true; }
+
 upsert_key "WB_HOST"            "$APP_HOST"
 upsert_key "WB_PORT"            "$APP_PORT"
 upsert_key "WB_ADMIN_USERNAME"  "$ADMIN_USERNAME"
@@ -370,17 +402,27 @@ upsert_key "WB_ADMIN_PASSWORD"  "$ADMIN_PASSWORD"
 if [[ -n "$QUICK_TOKEN" ]]; then
     upsert_key "WB_QUICK_TOKEN" "$QUICK_TOKEN"
 fi
+# Tokens are only ever WRITTEN, never deleted on update: wiping
+# WB_TELEGRAM_BOT_TOKEN / WB_APP_TOKEN from .env silently disabled Telegram
+# login / the whole Android /api/app router on re-installs.
 if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
     upsert_key "WB_TELEGRAM_BOT_TOKEN" "$TELEGRAM_BOT_TOKEN"
-else
-    # Remove any stale token from a previous install so TG auth is cleanly disabled.
+elif ! $IS_UPDATE; then
     sed -i '/^WB_TELEGRAM_BOT_TOKEN=/d' "$APP_DIR/.env" 2>/dev/null || true
 fi
+if [[ -n "$APP_TOKEN" ]]; then
+    upsert_key "WB_APP_TOKEN" "$APP_TOKEN"
+fi
+# Android App Links verification (mandatory for Android 15+/16 to open the
+# /tginit https callback in the app). add-if-missing keeps a manually tuned
+# fingerprint intact.
+add_if_missing "WB_APP_PACKAGE"     "${APP_PACKAGE:-$(_env_def WB_APP_PACKAGE)}"
+add_if_missing "WB_APP_CERT_SHA256" "${APP_CERT_SHA256:-$(_env_def WB_APP_CERT_SHA256)}"
 upsert_key "WB_DATA_DIR"        "$APP_DIR/data"
 upsert_key "WB_BINARIES_DIR"    "$APP_DIR/binaries"
 upsert_key "WB_DATABASE_PATH"   "$APP_DIR/data/app.db"
 chmod 600 "$APP_DIR/.env"   # contains the admin password — protect it.
-ok ".env written at $APP_DIR/.env (mode 600)"
+ok ".env written at $APP_DIR/.env (mode 600; existing tokens preserved)"
 
 # #############################################################################
 # 6. DB init + forced admin password sync
@@ -455,6 +497,17 @@ if systemctl is-active --quiet "$SERVICE_NAME"; then
     ok "Service $SERVICE_NAME is running on ${APP_HOST}:${APP_PORT}"
 else
     die "Service failed to start. Inspect: journalctl -u $SERVICE_NAME -n 50 --no-pager"
+fi
+
+# Smoke: the App Links statement must be served by the backend — without it
+# Android 15+/16 refuses to open the /tginit https link in the app (the
+# "works on Android 12, dead on 16" symptom).
+ASSETLINKS="$(curl -fsS "http://${APP_HOST}:${APP_PORT}/.well-known/assetlinks.json" 2>/dev/null || true)"
+if [[ "$ASSETLINKS" == *'"android_app"'* ]]; then
+    ok "App Links statement served (/ .well-known/assetlinks.json)"
+else
+    warn "assetlinks.json NOT served by the backend — Android 15+/16 will not"
+    warn "open the app link. Check WB_APP_PACKAGE / WB_APP_CERT_SHA256 and: journalctl -u $SERVICE_NAME -n 30"
 fi
 
 # #############################################################################
