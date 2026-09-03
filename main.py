@@ -231,7 +231,7 @@ async def tg_auth_page():
 # app never receives the Telegram initData (the "works on 12, dead on 16"
 # symptom). Must be served over HTTPS as application/json with HTTP 200 and
 # no redirects.
-@app.get("/.well-known/assetlinks.json")
+@app.api_route("/.well-known/assetlinks.json", methods=["GET", "HEAD"])
 async def assetlinks():
     if not APP_PACKAGE or not APP_CERT_SHA256:
         raise HTTPException(status_code=404, detail="assetlinks disabled")
@@ -253,13 +253,13 @@ async def assetlinks():
 
 
 # Android handoff page: the https App Link target the /tg-auth bridge page
-# redirects to (https://<domain>/tginit?initdata=...). Once the App Link is
+# redirects to (https://<domain>/tginit?initdata=...). When the App Link is
 # verified (see /.well-known/assetlinks.json above) Android opens the app
-# directly and this page is never seen; if it IS seen (desktop, not installed,
-# verification pending), it offers a manual retry of the same https link
-# instead of falling through to the SPA dashboard (the previous "broken page"
-# behaviour). NOTE: no corsconnect://tginit custom-scheme attempt here — the
-# app's manifest has no such intent-filter.
+# directly and this page is never seen. Otherwise (Android 15+/16 with a
+# pending/failed verification, desktop, app not installed) the browser shows
+# this page, which hands off via the corsconnect://tginit custom scheme
+# (auto attempt + button; a user-gesture navigation works on every Android
+# version) instead of falling through to the SPA dashboard.
 def _escape_attr(s: str) -> str:
     return (
         (s or "")
@@ -348,10 +348,11 @@ def _tg_init_html_page(init_data: str) -> str:
       </div>
 
       <!-- Ready state: the verified App Link normally opens the app before
-           this page renders; the button re-fires the same App Link. -->
+           this page renders; otherwise the page hands off via the
+           corsconnect:// custom scheme. -->
       <div id="view-loading">
         <div class="spinner"></div>
-        <h1>Returning to Cors.Connect…</h1>
+        <h1>Opening Cors.Connect…</h1>
         <p class="sub">Tap the button below if the app didn't open automatically.</p>
         <button id="btn-open" class="btn-action">Open App</button>
       </div>
@@ -385,21 +386,43 @@ def _tg_init_html_page(init_data: str) -> str:
         btnRetry.classList.toggle("hidden", !showRetry);
       }
 
-      // On Android the verified App Link opens the app BEFORE this page
-      // renders, so no auto-navigation here (an automatic retry would just
-      // reload-loop in a browser). The button re-fires the same https App
-      // Link — after verification lands (or on a device where the chooser
-      // appeared) that hands off to the app.
-      btnOpen.addEventListener("click", function () {
-        window.location.replace(window.location.href);
-      });
-      btnRetry.addEventListener("click", function () {
-        window.location.replace(window.location.href);
-      });
+      // Custom-scheme handoff: on Android 15+/16 the UNVERIFIED https App
+      // Link opens here in the browser; a corsconnect:// navigation fired by
+      // a user gesture (the button) reaches the app on every Android version.
+      // Must match the intent-filter in the app's AndroidManifest.xml.
+      function openApp() {
+        window.location.href = "corsconnect://tginit?initdata=" + encodeURIComponent(raw);
+      }
+
+      btnOpen.addEventListener("click", openApp);
+      btnRetry.addEventListener("click", openApp);
 
       if (!raw || raw.indexOf("hash=") === -1) {
         showError("Link expired", "This sign-in link is incomplete. Start again from the Cors.Connect app.", false);
+        return;
       }
+
+      // Auto attempt: custom-scheme navigation does NOT reload this page, so
+      // there is no loop risk — browsers that require a gesture just ignore
+      // it and the button (a real gesture) covers them.
+      openApp();
+
+      // If the page is still visible shortly after, the app did not take the
+      // link — surface the manual button.
+      setTimeout(function () {
+        if (!document.hidden) {
+          showError("App didn't open?", "Tap below to open Cors.Connect, or return to the app and sign in again.", true);
+        }
+      }, 1500);
+
+      // The app opened (page hidden): restore the neutral view so a stale
+      // "didn't open" message is not shown when the user comes back.
+      document.addEventListener("visibilitychange", function () {
+        if (document.hidden) {
+          errorView.classList.add("hidden");
+          loadingView.classList.remove("hidden");
+        }
+      });
     })();
   </script>
 </body>
