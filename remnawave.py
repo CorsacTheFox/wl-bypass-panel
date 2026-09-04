@@ -200,7 +200,7 @@ CONF_SYNC_GRANT_CREATE = "remnawave_sync_grant_create"
 CONF_SYNC_MAX_CONCURRENT = "remnawave_sync_max_concurrent"
 CONF_LAST_SYNC = "remnawave_last_sync"                    # JSON run summary
 # Squads allowed to sign in to the app via subscription link-auth
-# (JSON array of uuids; empty = ALL squads allowed).
+# (JSON array of uuids; empty = no restrictions, all squads allowed).
 CONF_LINK_AUTH_SQUADS = "remnawave_link_auth_squads"
 
 
@@ -244,8 +244,10 @@ async def get_client() -> RemnawaveClient:
 async def get_link_auth_squads() -> list[str]:
     """Squads allowed to sign in to the app via subscription link-auth.
 
-    Empty list = no restriction (every panel squad may sign in). Set from the
-    admin UI (Admin → Remnawave → App sign-in squads).
+    Empty list = no restriction (every squad may sign in). Enforced by the
+    caller (routers/app.py) against the user's squad list — a user passes
+    when ANY of their squads is in the list. Set from the admin UI
+    (Admin → Remnawave → App sign-in squads).
     """
     raw = await _get_setting(CONF_LINK_AUTH_SQUADS)
     try:
@@ -256,6 +258,7 @@ async def get_link_auth_squads() -> list[str]:
 
 
 async def set_link_auth_squads(squads: list[str]) -> None:
+    """Store the allowed-squad list for app sign-in (see get_link_auth_squads)."""
     await _set_setting(CONF_LINK_AUTH_SQUADS, json.dumps(list(squads)))
 
 
@@ -358,13 +361,22 @@ class RemnawaveMigrationService:
         return name
 
     async def fetch_users(self, squad_uuids: list[str]) -> list[dict]:
-        """All users of the given squads, deduped by uuid (first squad wins)."""
+        """All users of the given squads, deduped by uuid.
+
+        A user living in several squads appears once, with every squad listed
+        in ``squads`` (``squad`` keeps the first one for compatibility).
+        """
         client = await get_client()
         seen: dict[str, dict] = {}
         for squad_uuid in squad_uuids:
             async for u in client.iter_users(squad_uuid):
                 uuid = str(u.get("uuid") or "")
-                if not uuid or uuid in seen:
+                if not uuid:
+                    continue
+                if uuid in seen:
+                    squads = seen[uuid].setdefault("squads", [seen[uuid]["squad"]])
+                    if squad_uuid not in squads:
+                        squads.append(squad_uuid)
                     continue
                 entry = {
                     "uuid": uuid,
@@ -392,13 +404,12 @@ class RemnawaveMigrationService:
         subscription link, e.g. ``https://<sub-domain>/<shortUuid>``) to that
         panel user, or None when unknown.
 
-        Searches the squads allowed for app sign-in
-        (:func:`get_link_auth_squads`) — every squad when that list is empty.
-        The panel-user dict carries the same keys as :meth:`fetch_users`
-        entries (including ``squad``, so the caller can enforce the allow-list
-        itself). Results are cached for SUBSCRIPTION_CACHE_TTL_SECONDS so
-        repeated sign-ins don't re-paginate the whole panel; a negative result
-        is cached briefly too.
+        Searches ALL panel squads — the allow-list (Admin → Remnawave → App
+        sign-in squads) is enforced by the caller against the entry's
+        ``squads`` list, so a non-allowed user gets a precise "squad is not
+        allowed" error instead of a misleading "not found". Results are cached
+        for SUBSCRIPTION_CACHE_TTL_SECONDS so repeated sign-ins don't
+        re-paginate the whole panel; a negative result is cached briefly too.
         """
         token = (token or "").strip()
         if not token:
@@ -409,8 +420,7 @@ class RemnawaveMigrationService:
         if cached is not None and loop.time() < cached[0]:
             return cached[1]
 
-        allowed = await get_link_auth_squads()
-        squads = allowed if allowed else [s["uuid"] for s in await self.list_squads()]
+        squads = [s["uuid"] for s in await self.list_squads()]
 
         found: dict | None = None
         # fetch_users dedupes by uuid across squads. Match priority mirrors the

@@ -482,9 +482,10 @@
       <!-- App sign-in squads (link-auth allow-list) -->
       <div class="card p-5">
         <div class="mb-4">
-          <h2 class="text-white font-semibold text-sm mb-1">App Sign-In Squads</h2>
+          <h2 class="text-white font-semibold text-sm mb-1">App Sign-In — Allowed Squads</h2>
           <p class="text-xs text-gray-500">
-            Which squads may sign in to the Android app with their subscription link.
+            Only the checked squads may sign in to the Android app with their subscription link
+            (a user in several squads passes when any of their squads is checked).
             Empty selection = <span class="text-gray-300">all squads allowed</span>.
           </p>
         </div>
@@ -494,7 +495,7 @@
         </div>
 
         <div class="flex items-center gap-3 pt-4 border-t border-white/[0.04]">
-          <button type="button" id="btn-rw-save-app-squads" class="btn btn-primary px-5">Save App Squads</button>
+          <button type="button" id="btn-rw-save-app-squads" class="btn btn-primary px-5">Save Allowed Squads</button>
           <span class="text-xs text-gray-600" id="rw-app-squads-hint">Applies immediately to new sign-ins.</span>
         </div>
       </div>
@@ -1377,7 +1378,7 @@ async function refreshRemnawave() {
     $('#rw-opt-slots').value = cfg.auto_sync.max_concurrent ?? 3;
     rwAppSelected = cfg.link_auth_squads || [];
     $('#rw-app-squads-hint').textContent = rwAppSelected.length
-      ? 'Restricted to ' + rwAppSelected.length + ' squad(s).'
+      ? 'Allowed: ' + rwAppSelected.length + ' squad(s).'
       : 'Empty = all squads allowed.';
     rwRenderLastSync(cfg.last_sync);
     // Auto-load squads once per session when the panel is configured.
@@ -1483,10 +1484,10 @@ $('#btn-rw-save-app-squads').addEventListener('click', async () => {
     });
     rwAppSelected = cfg.link_auth_squads || [];
     $('#rw-app-squads-hint').textContent = rwAppSelected.length
-      ? 'Restricted to ' + rwAppSelected.length + ' squad(s).'
+      ? 'Allowed: ' + rwAppSelected.length + ' squad(s).'
       : 'Empty = all squads allowed.';
     toast(rwAppSelected.length
-      ? 'App sign-in restricted to ' + rwAppSelected.length + ' squad(s)'
+      ? 'App sign-in allowed for ' + rwAppSelected.length + ' squad(s)'
       : 'App sign-in: all squads allowed');
   } catch (err) { toast(err.message, 'err'); }
   finally { btn.disabled = false; }

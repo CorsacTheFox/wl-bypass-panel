@@ -272,15 +272,17 @@ async def _resolve_link_user(subscription: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Subscription not found — check the link or contact support",
         )
-    # Squad allow-list (Admin → Remnawave → App sign-in squads). Empty = all
-    # squads allowed. Distinguished from "not found" so a restricted user
-    # gets an actionable message instead of a generic 401.
+    # Squad ALLOW-list (Admin → Remnawave → App sign-in squads): only the
+    # checked squads may sign in via the app; empty = all squads allowed.
+    # A user in several squads passes when ANY of their squads is checked.
     allowed_squads = await get_link_auth_squads()
-    if allowed_squads and panel_user.get("squad") not in allowed_squads:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Your squad is not allowed to sign in via the app",
-        )
+    if allowed_squads:
+        user_squads = set(panel_user.get("squads") or [panel_user.get("squad")])
+        if not (user_squads & set(allowed_squads)):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your squad is not allowed to sign in via the app",
+            )
     if str(panel_user.get("status") or "").upper() != "ACTIVE":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
