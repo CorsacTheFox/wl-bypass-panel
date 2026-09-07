@@ -33,7 +33,14 @@
 #   ADMIN_PASSWORD                        (default: auto-generated, alphanumeric)
 #   APP_DIR       install path           (default /opt/whitelist-manager)
 #   SERVICE_USER  unprivileged user      (default wb-manager)
+#   RECONFIGURE=1 on an update, force the config prompts (default: keep as-is)
 #   DEBUG=1       enable set -x tracing
+#
+# On an UPDATE the installer asks a single yes/no question ("Reconfigure
+# settings?"). Answer N (default) and nothing in .env / the proxy config / the
+# admin password is touched — only new .env.example keys are appended and the
+# manager process is restarted. Answer y (or pass RECONFIGURE=1) to walk the
+# full prompt list; even then only values you actually change are written.
 #
 # NOTE on updates (re-run over an existing $APP_DIR) — the update is now
 # NON-DESTRUCTIVE:
@@ -115,17 +122,32 @@ prompt() {
 # On an update, default PROXY to whatever is already serving this install so a
 # press-Enter update does not switch nginx <-> caddy underneath the operator.
 _DETECTED_PROXY=""
+_DETECTED_DOMAIN=""
+_DETECTED_PUBLIC_PORT=""
 if $IS_UPDATE; then
+    NGINX_SITE_FILE="/etc/nginx/sites-available/${SERVICE_NAME}"
     if [[ -f /etc/nginx/sites-enabled/${SERVICE_NAME} ]]; then
         _DETECTED_PROXY="nginx"
+        # server_name (skip the "_" catch-all) and the first listen port.
+        _DETECTED_DOMAIN="$(grep -hoE 'server_name[[:space:]]+[^;]+' "$NGINX_SITE_FILE" 2>/dev/null \
+            | awk '{print $2}' | grep -v '^_$' | head -1 || true)"
+        _DETECTED_PUBLIC_PORT="$(grep -hoE 'listen[[:space:]]+[0-9]+' "$NGINX_SITE_FILE" 2>/dev/null \
+            | awk '{print $2}' | head -1 || true)"
     elif [[ -f /etc/caddy/Caddyfile ]] && grep -q 'whitelist-manager install.sh' /etc/caddy/Caddyfile 2>/dev/null; then
         _DETECTED_PROXY="caddy"
+        # First site label: "example.com {" => domain, ":80 {" => bare port.
+        _CADDY_LABEL="$(grep -oE '^[^#[:space:]]+[[:space:]]*\{' /etc/caddy/Caddyfile 2>/dev/null | head -1 | sed 's/[[:space:]]*{.*//' || true)"
+        if [[ "$_CADDY_LABEL" == :* ]]; then
+            _DETECTED_PUBLIC_PORT="${_CADDY_LABEL#:}"
+        elif [[ -n "$_CADDY_LABEL" ]]; then
+            _DETECTED_DOMAIN="$_CADDY_LABEL"
+        fi
     fi
 fi
 PROXY="${PROXY:-${_DETECTED_PROXY:-nginx}}"
-DOMAIN="${DOMAIN:-}"
+DOMAIN="${DOMAIN:-${_DETECTED_DOMAIN:-}}"
 EMAIL="${EMAIL:-}"
-PUBLIC_PORT="${PUBLIC_PORT:-80}"
+PUBLIC_PORT="${PUBLIC_PORT:-${_DETECTED_PUBLIC_PORT:-80}}"
 QUICK_TOKEN="${QUICK_TOKEN:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 APP_TOKEN="${APP_TOKEN:-}"
@@ -154,6 +176,19 @@ if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
     APP_TOKEN="${APP_TOKEN:-$(_env_get WB_APP_TOKEN)}"
 fi
 
+# On an update we keep the whole configuration as-is by default (values come
+# from the existing .env + detected proxy config). The installer asks ONE
+# yes/no question — whether to reconfigure — and only then walks the prompts.
+# Non-interactive: pass RECONFIGURE=1 to force the prompts, or override any
+# single value with its env var (PROXY=, DOMAIN=, APP_PORT=, ADMIN_PASSWORD=...).
+ASK_QUESTIONS=1
+if $IS_UPDATE; then
+    ASK_QUESTIONS=0
+    if [[ "${RECONFIGURE:-0}" == "1" ]]; then
+        ASK_QUESTIONS=1
+    fi
+fi
+
 echo
 echo "=============================================================="
 echo "  Whitelist-Bypass Instance Manager — installer"
@@ -164,48 +199,64 @@ else
 fi
 echo "=============================================================="
 
-prompt PROXY       "Reverse proxy (nginx | caddy)" "$PROXY"
-PROXY="${PROXY,,}"   # lowercase
-case "$PROXY" in
-    nginx|caddy) ;;
-    *) die "PROXY must be 'nginx' or 'caddy' (got: $PROXY)";;
-esac
-
-prompt DOMAIN      "Domain for HTTPS (blank = plain HTTP on PUBLIC_PORT)" "$DOMAIN"
-if [[ -n "$DOMAIN" ]]; then
-    if [[ "$PROXY" == "nginx" ]]; then
-        prompt EMAIL "Email for Let's Encrypt" "${EMAIL:-}"
-        [[ -n "$EMAIL" ]] || die "EMAIL is required for nginx + DOMAIN (Let's Encrypt)."
-    fi
-    log "Target: https://$DOMAIN  (TLS via $PROXY)"
-else
-    log "Target: http://<server-ip>:$PUBLIC_PORT  (no TLS — set DOMAIN to enable)"
+# The single update question: change configuration, or keep everything?
+if $IS_UPDATE && [[ "$ASK_QUESTIONS" -eq 0 && "$INTERACTIVE" -eq 1 ]]; then
+    _reconf=""
+    read -r -p "Reconfigure settings (.env / proxy / admin)? Everything is kept as-is otherwise [y/N]: " _reconf || true
+    case "${_reconf,,}" in
+        y|yes) ASK_QUESTIONS=1 ;;
+        *)     log "Keeping the current configuration unchanged." ;;
+    esac
 fi
 
-prompt APP_PORT    "Internal uvicorn port (behind the proxy)" "$APP_PORT"
-if [[ -z "$DOMAIN" ]]; then
-    prompt PUBLIC_PORT "External HTTP port the proxy listens on" "$PUBLIC_PORT"
-    [[ "$PUBLIC_PORT" != "$APP_PORT" ]] \
-        || warn "PUBLIC_PORT == APP_PORT ($APP_PORT): the proxy and uvicorn will both bind it. Set a different APP_PORT."
-fi
+if [[ "$ASK_QUESTIONS" -eq 1 ]]; then
+    prompt PROXY       "Reverse proxy (nginx | caddy)" "$PROXY"
+    PROXY="${PROXY,,}"   # lowercase
+    case "$PROXY" in
+        nginx|caddy) ;;
+        *) die "PROXY must be 'nginx' or 'caddy' (got: $PROXY)";;
+    esac
 
-prompt ADMIN_USERNAME "Admin username" "$ADMIN_USERNAME"
-# Password: don't echo. Blank = auto-generate on fresh install, or keep current on update.
-if [[ "$INTERACTIVE" -eq 1 ]]; then
-    if $IS_UPDATE; then
-        read -r -s -p "Admin password (blank = keep current): " ADMIN_PASSWORD; echo
+    prompt DOMAIN      "Domain for HTTPS (blank = plain HTTP on PUBLIC_PORT)" "$DOMAIN"
+    if [[ -n "$DOMAIN" ]]; then
+        if [[ "$PROXY" == "nginx" ]]; then
+            prompt EMAIL "Email for Let's Encrypt" "${EMAIL:-}"
+            [[ -n "$EMAIL" ]] || die "EMAIL is required for nginx + DOMAIN (Let's Encrypt)."
+        fi
+        log "Target: https://$DOMAIN  (TLS via $PROXY)"
     else
-        read -r -s -p "Admin password (blank = auto-generate): " ADMIN_PASSWORD; echo
+        log "Target: http://<server-ip>:$PUBLIC_PORT  (no TLS — set DOMAIN to enable)"
     fi
-else
-    if ! $IS_UPDATE; then
-        : "${ADMIN_PASSWORD:?Non-interactive: set ADMIN_PASSWORD (or ADMIN_PASSWORD= to auto-generate is unsupported in CI)}"
-    fi
-fi
 
-prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
-prompt TELEGRAM_BOT_TOKEN "Telegram Mini App bot token (blank = keep current on update / disabled on fresh install)" "$TELEGRAM_BOT_TOKEN"
-prompt APP_TOKEN "Android app API token, X-App-Token (blank = keep current on update / disabled on fresh install)" "$APP_TOKEN"
+    prompt APP_PORT    "Internal uvicorn port (behind the proxy)" "$APP_PORT"
+    if [[ -z "$DOMAIN" ]]; then
+        prompt PUBLIC_PORT "External HTTP port the proxy listens on" "$PUBLIC_PORT"
+        [[ "$PUBLIC_PORT" != "$APP_PORT" ]] \
+            || warn "PUBLIC_PORT == APP_PORT ($APP_PORT): the proxy and uvicorn will both bind it. Set a different APP_PORT."
+    fi
+
+    prompt ADMIN_USERNAME "Admin username" "$ADMIN_USERNAME"
+    # Password: don't echo. Blank = auto-generate (fresh) / keep current (update).
+    if [[ "$INTERACTIVE" -eq 1 ]]; then
+        if $IS_UPDATE; then
+            read -r -s -p "Admin password (blank = keep current): " ADMIN_PASSWORD; echo
+        else
+            read -r -s -p "Admin password (blank = auto-generate): " ADMIN_PASSWORD; echo
+        fi
+    else
+        if ! $IS_UPDATE; then
+            : "${ADMIN_PASSWORD:?Non-interactive: set ADMIN_PASSWORD (or ADMIN_PASSWORD= to auto-generate is unsupported in CI)}"
+        fi
+    fi
+
+    prompt QUICK_TOKEN "Quick-launch token (blank = disabled)" "$QUICK_TOKEN"
+    prompt TELEGRAM_BOT_TOKEN "Telegram Mini App bot token (blank = keep current on update / disabled on fresh install)" "$TELEGRAM_BOT_TOKEN"
+    prompt APP_TOKEN "Android app API token, X-App-Token (blank = keep current on update / disabled on fresh install)" "$APP_TOKEN"
+else
+    PROXY="${PROXY,,}"
+    case "$PROXY" in nginx|caddy) ;; *) PROXY="nginx";; esac
+    log "[UPDATE] proxy=$PROXY domain=${DOMAIN:-<none>} public_port=$PUBLIC_PORT app_port=$APP_PORT admin=$ADMIN_USERNAME"
+fi
 
 # #############################################################################
 # 1b. Pre-flight: backup database (update only)
@@ -633,8 +684,27 @@ fi
 
 # #############################################################################
 # 8. Reverse proxy (nginx OR caddy)
+#
+# On a keep-as-is update (no reconfigure) we do NOT touch an existing proxy
+# config — rewriting it would drop certbot's TLS edits. We only (re)generate it
+# on a fresh install, when reconfiguring, or when the config is missing.
 # #############################################################################
-if [[ "$PROXY" == "nginx" ]]; then
+PROXY_RECONF=1
+if $IS_UPDATE && [[ "$ASK_QUESTIONS" -eq 0 ]]; then
+    if { [[ "$PROXY" == "nginx" ]] && [[ -f "/etc/nginx/sites-available/${SERVICE_NAME}" ]]; } \
+    || { [[ "$PROXY" == "caddy" ]] && [[ -f /etc/caddy/Caddyfile ]]; }; then
+        PROXY_RECONF=0
+    fi
+fi
+
+if [[ "$PROXY_RECONF" -eq 0 ]]; then
+    log "Reverse proxy ($PROXY) left unchanged; reloading only."
+    if [[ "$PROXY" == "nginx" ]]; then
+        nginx -t >/dev/null 2>&1 && systemctl reload nginx || warn "nginx -t failed; config left as-is"
+    else
+        systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+    fi
+elif [[ "$PROXY" == "nginx" ]]; then
     _install_nginx() { :; }   # keep shellcheck happy; real work below
     log "Installing nginx config..."
 
@@ -742,7 +812,13 @@ fi
 # #############################################################################
 # 10. Let's Encrypt (nginx path only; caddy does its own TLS)
 # #############################################################################
-if [[ -n "$DOMAIN" && "$PROXY" == "nginx" ]]; then
+if [[ -n "$DOMAIN" && "$PROXY" == "nginx" ]] \
+   && [[ -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
+    ok "TLS certificate for $DOMAIN already present — leaving it untouched (renewal is automatic)"
+elif [[ -n "$DOMAIN" && "$PROXY" == "nginx" && -z "$EMAIL" ]]; then
+    warn "DOMAIN set but no EMAIL and no existing cert — skipping Let's Encrypt."
+    warn "Run: sudo certbot --nginx -d $DOMAIN   (or re-run with RECONFIGURE=1 EMAIL=you@x.com)"
+elif [[ -n "$DOMAIN" && "$PROXY" == "nginx" ]]; then
     log "Requesting TLS certificate for $DOMAIN ..."
     if certbot --nginx -n --redirect \
          --agree-tos -m "$EMAIL" --no-eff-email \

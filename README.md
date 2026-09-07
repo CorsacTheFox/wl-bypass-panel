@@ -169,8 +169,13 @@ Re-run the same installer. It auto-detects the existing install and switches to
 ```bash
 sudo bash /tmp/whitelist-manager/deploy/install.sh
 ```
-Just press Enter through every prompt — the defaults are the current values, so
-nothing is rewritten.
+On an update it asks **one** question — *"Reconfigure settings? [y/N]"*. Press
+Enter (**N**) and it keeps everything: `.env`, proxy config, TLS cert, admin
+password. It still rsyncs new code, installs deps, adds any **new** keys from
+`.env.example`, and restarts the manager process. Answer **y** only when you
+actually want to change host/port/proxy/domain/tokens/password. For scripted
+runs use `RECONFIGURE=1` (plus the relevant `PROXY=`, `DOMAIN=`, … vars) to
+force the prompts; without it an update changes nothing you didn't ask for.
 
 ### Deployment files
 | File | Purpose |
