@@ -137,7 +137,7 @@ async def preview(body: MigrateRequest):
 @router.post("/migrate")
 async def migrate(body: MigrateRequest):
     """Import new users from the selected squads (idempotent — already
-    imported users are skipped by their Remnawave UUID)."""
+    imported users are skipped by their external_ref / shortUuid)."""
     try:
         return await remnawave_service.migrate(
             body.squads,

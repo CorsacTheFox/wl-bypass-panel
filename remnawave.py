@@ -15,12 +15,21 @@ pieces live here:
   * :class:`RemnawaveSyncService` — optional background loop that re-runs the
                                   import on an interval (Admin → Remnawave tab).
 
-API shapes (Remnawave API spec v3.2.x):
-    GET /api/system/metadata     -> {response: {version, ...}}
+API shapes (Remnawave API spec v3.x):
+    GET /api/system/metadata     -> {response: {version, build, git, ...}}
     GET /api/internal-squads     -> {response: {total, internalSquads: [{uuid, name}]}}
     GET /api/users?start&size&filters=<json>
       filters = [{"id": "activeInternalSquads", "value": "<squad-uuid>"}]
       -> {response: {users: [...], total}}
+    GET /api/users/by-short-uuid/<shortUuid>  -> {response: <user>}   (404 = unknown)
+    GET /api/users/by-username/<username>     -> {response: <user>}   (404 = unknown)
+
+    v3 user object: identified by numeric ``id``; ``shortUuid`` is the stable
+    string handle and equals the subscription-link token. The pre-3.0 ``uuid``,
+    ``subscriptionId`` and ``subscriptionUserName`` fields were removed. We key
+    local accounts (``users.external_ref``) on ``shortUuid``; rows imported
+    before 3.0 still carry the old UUID and are re-bound on the next sync (see
+    ``RemnawaveMigrationService._classify``) without being re-created.
 """
 from __future__ import annotations
 
@@ -28,6 +37,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import httpx
 
@@ -183,6 +193,26 @@ class RemnawaveClient:
             if len(users) < USERS_PAGE_SIZE:  # defensive: panel lied about total
                 return
             start += len(users)
+
+    async def get_user_by_short_uuid(self, short_uuid: str) -> dict | None:
+        """Direct O(1) lookup by shortUuid (v3). None when the panel returns 404."""
+        try:
+            data = await self._get(f"/users/by-short-uuid/{quote(short_uuid, safe='')}")
+        except RemnawaveError as e:
+            if e.status == 404:
+                return None
+            raise
+        return data.get("response") or None
+
+    async def get_user_by_username(self, username: str) -> dict | None:
+        """Direct lookup by username (v3). None when the panel returns 404."""
+        try:
+            data = await self._get(f"/users/by-username/{quote(username, safe='')}")
+        except RemnawaveError as e:
+            if e.status == 404:
+                return None
+            raise
+        return data.get("response") or None
 
 
 # --------------------------------------------------------------------------- #
@@ -360,8 +390,42 @@ class RemnawaveMigrationService:
                     break
         return name
 
+    def _user_entry(
+        self,
+        u: dict,
+        squad_uuid: str | None = None,
+        squads: list[str] | None = None,
+    ) -> dict | None:
+        """Normalize a raw v3 panel user into the dict the rest of this module
+        (and routers/app.py) consumes. Returns None for an unusable record.
+
+        ``ref`` is the canonical key stored in ``users.external_ref`` — the
+        ``shortUuid`` (stable, string, also the subscription-link token). We
+        fall back to ``str(id)`` only if the panel omits shortUuid.
+        """
+        short_uuid = str(u.get("shortUuid") or "") or None
+        panel_id = u.get("id")
+        ref = short_uuid or (str(panel_id) if panel_id is not None else None)
+        if not ref:
+            return None
+        squad_list = list(squads) if squads is not None else ([squad_uuid] if squad_uuid else [])
+        return {
+            "ref": ref,
+            "id": panel_id,
+            "short_uuid": short_uuid,
+            "username": self._sanitize_import_username(str(u.get("username") or "")),
+            "status": u.get("status") or "",
+            "expire_at": u.get("expireAt"),
+            "telegram_id": u.get("telegramId"),
+            "squad": squad_list[0] if squad_list else None,
+            "squads": squad_list,
+            # Present on the current (Extended) user schema; the last path
+            # segment equals ``short_uuid``.
+            "subscription_url": str(u.get("subscriptionUrl") or "") or None,
+        }
+
     async def fetch_users(self, squad_uuids: list[str]) -> list[dict]:
-        """All users of the given squads, deduped by uuid.
+        """All users of the given squads, deduped by shortUuid.
 
         A user living in several squads appears once, with every squad listed
         in ``squads`` (``squad`` keeps the first one for compatibility).
@@ -370,33 +434,15 @@ class RemnawaveMigrationService:
         seen: dict[str, dict] = {}
         for squad_uuid in squad_uuids:
             async for u in client.iter_users(squad_uuid):
-                uuid = str(u.get("uuid") or "")
-                if not uuid:
+                entry = self._user_entry(u, squad_uuid=squad_uuid)
+                if entry is None:
                     continue
-                if uuid in seen:
-                    squads = seen[uuid].setdefault("squads", [seen[uuid]["squad"]])
-                    if squad_uuid not in squads:
-                        squads.append(squad_uuid)
+                key = entry["ref"]
+                if key in seen:
+                    if squad_uuid not in seen[key]["squads"]:
+                        seen[key]["squads"].append(squad_uuid)
                     continue
-                entry = {
-                    "uuid": uuid,
-                    "username": self._sanitize_import_username(str(u.get("username") or "")),
-                    "status": u.get("status") or "",
-                    "expire_at": u.get("expireAt"),
-                    "telegram_id": u.get("telegramId"),
-                    "squad": squad_uuid,
-                    # Subscription identifiers, matched against the token the
-                    # user pastes into the app (link-auth). Field names differ
-                    # across panel versions:
-                    #   shortUuid / subscriptionUrl — current Remnawave builds
-                    #       (custom sub domains serve https://<host>/<shortUuid>)
-                    #   subscriptionId / subscriptionUserName — older builds.
-                    "short_uuid": str(u.get("shortUuid") or "") or None,
-                    "subscription_url": str(u.get("subscriptionUrl") or "") or None,
-                    "subscription_id": str(u.get("subscriptionId") or "") or None,
-                    "subscription_user_name": str(u.get("subscriptionUserName") or "") or None,
-                }
-                seen[uuid] = entry
+                seen[key] = entry
         return list(seen.values())
 
     async def find_user_by_subscription(self, token: str) -> dict | None:
@@ -420,33 +466,35 @@ class RemnawaveMigrationService:
         if cached is not None and loop.time() < cached[0]:
             return cached[1]
 
-        squads = [s["uuid"] for s in await self.list_squads()]
+        client = await get_client()
+        # v3: resolve directly instead of paginating every squad on each cache
+        # miss. The pasted token is the shortUuid (last path segment of the
+        # subscription link); fall back to treating it as a username.
+        raw = await client.get_user_by_short_uuid(token)
+        if raw is None:
+            raw = await client.get_user_by_username(token)
 
         found: dict | None = None
-        # fetch_users dedupes by uuid across squads. Match priority mirrors the
-        # panel versions' link shapes: current builds put the shortUuid in the
-        # subscription URL path; older ones used subscriptionId or a
-        # user-chosen subscriptionUserName.
-        users = await self.fetch_users(squads)
-        for u in users:
-            if u["short_uuid"] == token or u["subscription_id"] == token:
-                found = u
-                break
-        if found is None:
-            lowered = token.lower()
-            for u in users:
-                url_token = (u["subscription_url"] or "").rstrip("/").rsplit("/", 1)[-1]
-                if url_token == token or (u["subscription_user_name"] or "").lower() == lowered:
-                    found = u
-                    break
+        if raw is not None:
+            squads = [
+                str(s.get("uuid") or "")
+                for s in (raw.get("activeInternalSquads") or [])
+                if s.get("uuid")
+            ]
+            found = self._user_entry(raw, squads=squads)
 
         self._sub_cache[token] = (loop.time() + SUBSCRIPTION_CACHE_TTL_SECONDS, found)
         return found
 
     async def _classify(self, users: list[dict], only_active: bool) -> tuple[list[dict], dict]:
-        """Split fetched users into (importable, counts)."""
+        """Split fetched users into (importable, counts).
+
+        ``rebound`` counts previously-imported accounts whose ``external_ref``
+        still held the pre-3.0 panel UUID and was healed to the new shortUuid
+        key in place — those users stay linked, they are never re-created.
+        """
         counts = {"total": len(users), "new": 0, "already": 0, "conflict": 0,
-                  "inactive": 0, "invalid": 0}
+                  "inactive": 0, "invalid": 0, "rebound": 0}
         importable: list[dict] = []
         for u in users:
             if not u["username"]:
@@ -458,19 +506,43 @@ class RemnawaveMigrationService:
                 counts["inactive"] += 1
                 u["category"] = "inactive"
                 continue
+            ref = u["ref"]
             by_ref = await db.fetchone(
-                "SELECT id FROM users WHERE external_ref=?", (u["uuid"],)
+                "SELECT id FROM users WHERE external_ref=?", (ref,)
             )
             if by_ref:
                 counts["already"] += 1
                 u["category"] = "already"
                 continue
-            by_name = await db.fetchone(
-                "SELECT id FROM users WHERE username=?", (u["username"],)
-            )
-            if by_name:
-                counts["conflict"] += 1
-                u["category"] = "conflict"
+            # Pre-3.0 imports stored the panel UUID in external_ref; v3 dropped
+            # `uuid`, so by_ref misses for them. Re-bind by telegram_id (exact)
+            # or username when the local row is clearly panel-sourced
+            # (external_ref already set) and heal it to the shortUuid key. A row
+            # with external_ref IS NULL is a genuine local account -> conflict.
+            rebind = None
+            if u["telegram_id"] is not None:
+                rebind = await db.fetchone(
+                    "SELECT id, external_ref FROM users WHERE telegram_id=?",
+                    (u["telegram_id"],),
+                )
+            if rebind is None:
+                rebind = await db.fetchone(
+                    "SELECT id, external_ref FROM users WHERE username=?",
+                    (u["username"],),
+                )
+            if rebind is not None:
+                if rebind["external_ref"]:
+                    # panel-sourced row with a stale ref — repoint it.
+                    await db.execute(
+                        "UPDATE users SET external_ref=? WHERE id=?",
+                        (ref, rebind["id"]),
+                    )
+                    counts["already"] += 1
+                    counts["rebound"] += 1
+                    u["category"] = "already"
+                else:
+                    counts["conflict"] += 1
+                    u["category"] = "conflict"
                 continue
             counts["new"] += 1
             u["category"] = "new"
@@ -504,7 +576,7 @@ class RemnawaveMigrationService:
                     username=u["username"],
                     password=None,  # must set one on first login (bulk-create pattern)
                     max_concurrent=max_concurrent,
-                    external_ref=u["uuid"],
+                    external_ref=u["ref"],
                     telegram_id=u["telegram_id"],
                     can_create_instances=grant_create_instances,
                 )
@@ -525,7 +597,7 @@ class RemnawaveMigrationService:
                 cur = await db.execute(
                     "UPDATE users SET can_create_instances=1 "
                     "WHERE external_ref=? AND can_create_instances=0",
-                    (u["uuid"],),
+                    (u["ref"],),
                 )
                 granted_existing += cur.rowcount or 0
 

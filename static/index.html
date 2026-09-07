@@ -1545,6 +1545,10 @@ function rwCountsHtml(c, created, errors, granted) {
     html += ' <span class="text-gray-600">\u00b7</span> '
       + '<span style="color:#ef4444">invalid: ' + c.invalid + '</span>';
   }
+  if (c.rebound) {
+    html += ' <span class="text-gray-600">\u00b7</span> '
+      + '<span style="color:#67e8f9" title="Pre-3.0 accounts re-linked to the new shortUuid key">re-linked: ' + c.rebound + '</span>';
+  }
   if (created !== undefined) {
     html += ' <span class="text-gray-600">\u00b7</span> '
       + '<span style="color:#22c55e">created: ' + created + '</span>';

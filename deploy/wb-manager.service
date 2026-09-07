@@ -39,10 +39,15 @@ RestrictSUIDSGID=true
 StandardOutput=journal
 StandardError=journal
 
-# Give it a moment to clean up child processes on stop (SIGTERM grace).
+# Stop/restart must NOT take the spawned proxy binaries down with the manager.
+# KillMode=process => systemd signals ONLY the uvicorn main process; the child
+# binaries (started with start_new_session=True, i.e. their own session/pgid)
+# keep running and the app re-adopts them on startup (main.py reattach()).
+# This is what lets `systemctl restart` / an update leave live instances alone.
 TimeoutStopSec=15
-KillMode=mixed
+KillMode=process
 KillSignal=SIGINT
+FinalKillSignal=SIGKILL
 SendSIGKILL=yes
 
 [Install]

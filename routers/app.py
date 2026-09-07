@@ -244,10 +244,10 @@ def _extract_subscription_token(subscription: str) -> str:
 async def _resolve_link_user(subscription: str) -> dict:
     """Resolve a subscription link to a local user, creating one on the fly.
 
-    The token is looked up among the panel users of the configured sync squads
-    (``subscriptionId`` / ``subscriptionUserName``). A panel user not yet
-    imported is auto-created locally with the same parameters the sync would
-    use, so sign-in never waits for the next sync cycle.
+    The token is the subscription-link ``shortUuid``; it is resolved against the
+    panel directly (``GET /api/users/by-short-uuid`` in remnawave.py). A panel
+    user not yet imported is auto-created locally with the same parameters the
+    sync would use, so sign-in never waits for the next sync cycle.
     """
     if not await is_configured():
         raise HTTPException(
@@ -289,10 +289,23 @@ async def _resolve_link_user(subscription: str) -> dict:
             detail="Subscription is expired or disabled",
         )
 
+    ref = panel_user["ref"]
+
     # 1. already imported
-    existing = await user_service.find_by_external_ref(panel_user["uuid"])
+    existing = await user_service.find_by_external_ref(ref)
     if existing:
         return await user_service.get(existing["id"])
+
+    # 1b. imported before Remnawave 3.0, when external_ref held the old panel
+    #     UUID: re-bind that same account to the v3 shortUuid instead of
+    #     creating a duplicate. Only touches panel-sourced rows.
+    rebound = await user_service.rebind_external_ref(
+        ref,
+        telegram_id=panel_user.get("telegram_id"),
+        username=panel_user.get("username") or None,
+    )
+    if rebound:
+        return rebound
 
     # 2. create on the fly, mirroring the sync's parameters (grant flag,
     #    concurrency cap) so an auto-created user matches an imported one.
@@ -300,7 +313,7 @@ async def _resolve_link_user(subscription: str) -> dict:
     username = panel_user.get("username") or (
         f"user_{panel_user['telegram_id']}" if panel_user.get("telegram_id") else ""
     )
-    for candidate in (username, f"remna_{panel_user['uuid'][:8]}"):
+    for candidate in (username, f"remna_{ref[:8]}"):
         if not candidate:
             continue
         try:
@@ -308,7 +321,7 @@ async def _resolve_link_user(subscription: str) -> dict:
                 username=candidate,
                 password=None,
                 max_concurrent=opts["max_concurrent"],
-                external_ref=panel_user["uuid"],
+                external_ref=ref,
                 telegram_id=panel_user.get("telegram_id"),
                 can_create_instances=bool(opts["grant_create_instances"]),
                 must_change_password=False,

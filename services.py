@@ -233,6 +233,39 @@ class UserService:
         row = await db.fetchone("SELECT id FROM users WHERE username=?", (username,))
         return dict(row) if row else None
 
+    async def rebind_external_ref(
+        self,
+        new_ref: str,
+        *,
+        telegram_id: int | None = None,
+        username: str | None = None,
+    ) -> dict | None:
+        """Heal a pre-3.0 imported account whose ``external_ref`` still holds the
+        old Remnawave UUID: match it by telegram_id (exact) or username, and —
+        only if that row is panel-sourced (``external_ref`` already set) —
+        repoint it to ``new_ref`` (the v3 shortUuid). Returns the account, or
+        None when there is nothing safe to re-bind (no match, or the match is a
+        genuine local account with ``external_ref IS NULL``).
+
+        Never creates, never touches a local-only account. Idempotent.
+        """
+        row = None
+        if telegram_id is not None:
+            row = await db.fetchone(
+                "SELECT id, external_ref FROM users WHERE telegram_id=?", (telegram_id,)
+            )
+        if row is None and username:
+            row = await db.fetchone(
+                "SELECT id, external_ref FROM users WHERE username=?", (username,)
+            )
+        if row is None or not row["external_ref"]:
+            return None
+        if row["external_ref"] != new_ref:
+            await db.execute(
+                "UPDATE users SET external_ref=? WHERE id=?", (new_ref, row["id"])
+            )
+        return await self.get(row["id"])
+
     async def link_telegram(self, user_id: int, telegram_id: int) -> dict:
         """Attach a telegram_id to an existing account.
 

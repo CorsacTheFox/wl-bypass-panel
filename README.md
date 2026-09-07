@@ -106,12 +106,11 @@ What the installer does:
 8. Opens firewall ports (80/443 with a domain, else `PUBLIC_PORT`)
 9. Requests a Let's Encrypt cert (`nginx` path only — Caddy handles its own TLS)
 
-> **Admin password is re-synced on every run.** The bootstrap admin is created
-> only on the *first* run, so editing `WB_ADMIN_PASSWORD` in `.env` later would
-> normally have **no effect** — which is a common "I can't log in" trap. To
-> avoid it, the installer always re-syncs the admin row to whatever is in
-> `.env`. Consequence: **re-running the installer resets the admin password.**
-> To change it manually instead, see the cheatsheet below.
+> **Admin password.** On a **fresh install** the bootstrap admin is created from
+> `WB_ADMIN_PASSWORD` (auto-generated if you don't supply one). On an **update**
+> the password is left alone — it is re-synced to the DB **only if you pass a
+> new `ADMIN_PASSWORD`** (env var, or a changed answer to the interactive
+> prompt). To change it manually at any other time, see the cheatsheet below.
 
 **After install:** log in at `https://wb.example.com` (or
 `http://<ip>:<PUBLIC_PORT>` without a domain) as the admin user — the password
@@ -156,12 +155,22 @@ sudo systemctl restart wb-manager
 ```
 
 ### Updating the app
-Re-run the installer — it rsyncs fresh code, reinstalls deps, and restarts the
-service, while leaving `.env` and `data/` untouched (**except it re-syncs the
-admin password from `.env`**):
+Re-run the same installer. It auto-detects the existing install and switches to
+**UPDATE mode**, which is **non-destructive**:
+
+| What | On update |
+|------|-----------|
+| `data/` (SQLite DB) | preserved + backed up to `/var/backups/wb-manager/` (last 3 kept). Schema changes are applied in-process by the app's migrations. |
+| `.env` | preserved. Existing keys are **not touched** unless you explicitly pass a new value for that key. **New** keys shipped in this release's `.env.example` are added with their default. Nothing is ever removed. |
+| Admin password | kept as-is; re-synced only if you pass a new `ADMIN_PASSWORD`. |
+| Running proxy instances | **kept alive.** Child binaries are not killed; only the uvicorn main process restarts (`KillMode=process`) and the app re-adopts the live PIDs on startup. |
+| `binaries/` | preserved. |
+
 ```bash
 sudo bash /tmp/whitelist-manager/deploy/install.sh
 ```
+Just press Enter through every prompt — the defaults are the current values, so
+nothing is rewritten.
 
 ### Deployment files
 | File | Purpose |

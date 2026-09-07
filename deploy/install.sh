@@ -35,16 +35,23 @@
 #   SERVICE_USER  unprivileged user      (default wb-manager)
 #   DEBUG=1       enable set -x tracing
 #
-# NOTE on admin password: the bootstrap admin is created on first run only, so
-# editing WB_ADMIN_PASSWORD in .env later would NOT change it. To avoid the
-# "I changed the password but still can't log in" trap, this installer ALWAYS
-# re-syncs the admin row's password hash to whatever ends up in .env. Re-running
-# the installer therefore resets the admin password — by design.
+# NOTE on updates (re-run over an existing $APP_DIR) — the update is now
+# NON-DESTRUCTIVE:
+#   * SQLite database (data/) is PRESERVED and backed up to /var/backups/ first.
+#     Schema changes are applied in-process by the app's own migrations.
+#   * .env is PRESERVED. Existing keys are NOT touched unless the operator
+#     explicitly passes a new value for that key (env var, or a changed answer
+#     to an interactive prompt). Brand-new keys shipped in .env.example by this
+#     release are ADDED with their template default; nothing is ever removed.
+#   * The admin password is KEPT. It is only re-synced to the DB when the
+#     operator explicitly supplies a new ADMIN_PASSWORD.
+#   * RUNNING PROXY INSTANCES SURVIVE THE UPDATE. Child binaries are not killed;
+#     only the uvicorn main process is restarted (KillMode=process) and the app
+#     re-adopts the still-alive PIDs on startup (see main.py reattach()).
+#   * Uploaded binaries/ are PRESERVED.
 #
-# NOTE on updates (re-run over an existing $APP_DIR): the SQLite database
-# (data/), the live .env (including WB_APP_TOKEN / WB_TELEGRAM_BOT_TOKEN) and
-# uploaded binaries are PRESERVED; the DB is additionally backed up to
-# /var/backups/ first. Tokens are never removed from .env on update.
+# A fresh install (no $APP_DIR) still creates the bootstrap admin and, if no
+# ADMIN_PASSWORD was given, auto-generates one.
 # =============================================================================
 set -euo pipefail
 
@@ -105,26 +112,43 @@ prompt() {
 # #############################################################################
 # 1. Configuration questions (every value has an env default)
 # #############################################################################
-PROXY="${PROXY:-nginx}"
+# On an update, default PROXY to whatever is already serving this install so a
+# press-Enter update does not switch nginx <-> caddy underneath the operator.
+_DETECTED_PROXY=""
+if $IS_UPDATE; then
+    if [[ -f /etc/nginx/sites-enabled/${SERVICE_NAME} ]]; then
+        _DETECTED_PROXY="nginx"
+    elif [[ -f /etc/caddy/Caddyfile ]] && grep -q 'whitelist-manager install.sh' /etc/caddy/Caddyfile 2>/dev/null; then
+        _DETECTED_PROXY="caddy"
+    fi
+fi
+PROXY="${PROXY:-${_DETECTED_PROXY:-nginx}}"
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
-APP_HOST="${APP_HOST:-127.0.0.1}"
-APP_PORT="${APP_PORT:-8000}"
 PUBLIC_PORT="${PUBLIC_PORT:-80}"
-ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 QUICK_TOKEN="${QUICK_TOKEN:-}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 APP_TOKEN="${APP_TOKEN:-}"
 
-# When updating, seed defaults from the existing .env so the user can just
-# press Enter through all prompts without re-entering everything.
+# For host/port/username/password the precedence is:
+#   explicit env var  >  existing .env value (update only)  >  built-in default
+# We must consult .env BEFORE applying the built-in defaults, otherwise a plain
+# `press-Enter` update would silently rewrite WB_PORT/WB_HOST back to the
+# defaults. (That was the old bug.)
+_env_get() { grep -E "^${1}=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
-    _env_get() { grep -E "^${1}=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
-    ADMIN_USERNAME="${ADMIN_USERNAME:-$(_env_get WB_ADMIN_USERNAME)}"
-    ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(_env_get WB_ADMIN_PASSWORD)}"
     APP_HOST="${APP_HOST:-$(_env_get WB_HOST)}"
     APP_PORT="${APP_PORT:-$(_env_get WB_PORT)}"
+    ADMIN_USERNAME="${ADMIN_USERNAME:-$(_env_get WB_ADMIN_USERNAME)}"
+    ADMIN_PASSWORD="${ADMIN_PASSWORD:-$(_env_get WB_ADMIN_PASSWORD)}"
+fi
+APP_HOST="${APP_HOST:-127.0.0.1}"
+APP_PORT="${APP_PORT:-8000}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-admin}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+
+# Remaining update-only prompt seeds (tokens): existing .env value as default.
+if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
     QUICK_TOKEN="${QUICK_TOKEN:-$(_env_get WB_QUICK_TOKEN)}"
     TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-$(_env_get WB_TELEGRAM_BOT_TOKEN)}"
     APP_TOKEN="${APP_TOKEN:-$(_env_get WB_APP_TOKEN)}"
@@ -184,41 +208,23 @@ prompt TELEGRAM_BOT_TOKEN "Telegram Mini App bot token (blank = keep current on 
 prompt APP_TOKEN "Android app API token, X-App-Token (blank = keep current on update / disabled on fresh install)" "$APP_TOKEN"
 
 # #############################################################################
-# 1b. Pre-flight: stop service, kill child processes, backup database (update only)
+# 1b. Pre-flight: backup database (update only)
+#
+# NOTE: we deliberately DO NOT stop the service or kill child processes here.
+#   * Child proxy binaries must keep running across the update. They are spawned
+#     in their own sessions (start_new_session=True) and the systemd unit uses
+#     KillMode=process, so the restart in step 7 signals ONLY the uvicorn main
+#     process. The app re-adopts the surviving PIDs on startup (main.py).
+#   * The Python source is swapped in place by rsync (inode replacement) while
+#     uvicorn runs; the new code is picked up by the single restart in step 7.
 # #############################################################################
 if $IS_UPDATE; then
     MODE_LABEL="UPDATE"
     echo
     log "[UPDATE] Detected existing installation at $APP_DIR"
+    log "[UPDATE] Running proxy instances will be preserved (no kill, main-process-only restart)"
 
-    # 1. Stop the systemd service.
-    if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
-        log "[UPDATE] Stopping service $SERVICE_NAME ..."
-        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-        sleep 1
-        ok "[UPDATE] Service stopped"
-    fi
-
-    # 2. Kill any remaining child processes (spawned binaries) owned by the
-    #    service user. SIGTERM first, wait, then SIGKILL stragglers.
-    CHILDREN=$(pgrep -u "$SERVICE_USER" 2>/dev/null || true)
-    if [[ -n "$CHILDREN" ]]; then
-        log "[UPDATE] Sending SIGTERM to $SERVICE_USER processes ..."
-        kill -TERM $CHILDREN 2>/dev/null || true
-        sleep 3
-        # Force-kill anything still alive.
-        REMAINING=$(pgrep -u "$SERVICE_USER" 2>/dev/null || true)
-        if [[ -n "$REMAINING" ]]; then
-            log "[UPDATE] Force-killing remaining processes ..."
-            kill -KILL $REMAINING 2>/dev/null || true
-            sleep 1
-        fi
-        ok "[UPDATE] All child processes terminated"
-    else
-        ok "[UPDATE] No child processes running"
-    fi
-
-    # 3. Backup SQLite database (keep last 3 backups). Stored OUTSIDE the app
+    # Backup SQLite database (keep last 3 backups). Stored OUTSIDE the app
     #    dir (/var/backups) so that no failure inside $APP_DIR — wipe bugs,
     #    bad deploys — can ever take the backups down with it.
     DB_PATH="$APP_DIR/data/app.db"
@@ -346,12 +352,13 @@ fi
 ok "Python deps installed"
 
 # #############################################################################
-# 5. .env (create or reconcile; do NOT clobber an existing one wholesale)
+# 5. .env  (fresh install: seed from template + apply prompts.
+#           update:        touch NOTHING the operator did not explicitly change,
+#                          but pull in brand-new keys from the shipped template.)
 # #############################################################################
-# If .env already exists we still force-update the values we care about so the
-# running config matches the prompts above. That is the whole point: previously
-# editing WB_ADMIN_PASSWORD had no effect.
+ENV_EXISTED=true
 if [[ ! -f "$APP_DIR/.env" ]]; then
+    ENV_EXISTED=false
     TEMPLATE=""
     for cand in "$APP_DIR/.env.example" "$APP_DIR/env.example"; do
         if [[ -f "$cand" ]]; then TEMPLATE="$cand"; break; fi
@@ -366,15 +373,17 @@ fi
 # Generate a strong password if none was provided (fresh install only).
 # On update, blank means "keep the existing one from .env".
 if [[ -z "$ADMIN_PASSWORD" ]]; then
-    if $IS_UPDATE && [[ -f "$APP_DIR/.env" ]]; then
+    if [[ -f "$APP_DIR/.env" ]]; then
         ADMIN_PASSWORD="$(grep -E '^WB_ADMIN_PASSWORD=' "$APP_DIR/.env" | head -1 | cut -d= -f2-)"
-        ok "Keeping existing admin password"
     fi
     if [[ -z "$ADMIN_PASSWORD" ]]; then
         ADMIN_PASSWORD="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
         ok "Auto-generated admin password (alphanumeric, no special chars)"
     fi
 fi
+
+# _cur_env <KEY> — current value of KEY in the live .env ('' if absent).
+_cur_env() { grep -E "^${1}=" "$APP_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
 # upsert_key <KEY> <VALUE> — sets KEY=VALUE, replacing any existing line.
 upsert_key() {
@@ -405,47 +414,121 @@ add_if_missing() {
 # .env, then the template default.
 _env_def() { grep -E "^${1}=" "$APP_DIR/.env.example" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
-upsert_key "WB_HOST"            "$APP_HOST"
-upsert_key "WB_PORT"            "$APP_PORT"
-upsert_key "WB_ADMIN_USERNAME"  "$ADMIN_USERNAME"
-upsert_key "WB_ADMIN_PASSWORD"  "$ADMIN_PASSWORD"
-if [[ -n "$QUICK_TOKEN" ]]; then
-    upsert_key "WB_QUICK_TOKEN" "$QUICK_TOKEN"
+# set_key <KEY> <DESIRED>
+#   fresh install       -> write DESIRED
+#   update, key absent   -> write DESIRED (a new key this release introduced)
+#   update, key present  -> write ONLY if DESIRED is non-empty AND differs from
+#                           the current value (i.e. the operator typed/passed a
+#                           new value); otherwise the on-disk value is kept.
+set_key() {
+    local key="$1" desired="$2" cur
+    if ! $ENV_EXISTED; then
+        upsert_key "$key" "$desired"; return
+    fi
+    if ! grep -qE "^${key}=" "$APP_DIR/.env"; then
+        [[ -n "$desired" ]] || return 0
+        add_if_missing "$key" "$desired"
+        log "[UPDATE] .env: added new key $key"
+        return
+    fi
+    cur="$(_cur_env "$key")"
+    if [[ -n "$desired" && "$desired" != "$cur" ]]; then
+        upsert_key "$key" "$desired"
+        log "[UPDATE] .env: $key updated (operator-supplied value)"
+    fi
+}
+
+# Admin password: on an update it is re-synced to the DB ONLY when a new value
+# was supplied (env var or a changed interactive answer). Blank / unchanged =>
+# keep the current password, in both .env and the DB.
+SYNC_ADMIN=1
+if $ENV_EXISTED; then
+    CUR_ADMIN_PW="$(_cur_env WB_ADMIN_PASSWORD)"
+    if [[ -n "$ADMIN_PASSWORD" && "$ADMIN_PASSWORD" != "$CUR_ADMIN_PW" ]]; then
+        SYNC_ADMIN=1
+    else
+        SYNC_ADMIN=0
+        ADMIN_PASSWORD="$CUR_ADMIN_PW"
+    fi
 fi
-# Tokens are only ever WRITTEN, never deleted on update: wiping
-# WB_TELEGRAM_BOT_TOKEN / WB_APP_TOKEN from .env silently disabled Telegram
-# login / the whole Android /api/app router on re-installs.
+
+set_key "WB_HOST"           "$APP_HOST"
+set_key "WB_PORT"           "$APP_PORT"
+set_key "WB_ADMIN_USERNAME" "$ADMIN_USERNAME"
+if ! $ENV_EXISTED || [[ "$SYNC_ADMIN" == "1" ]]; then
+    upsert_key "WB_ADMIN_PASSWORD" "$ADMIN_PASSWORD"
+fi
+# Tokens: only ever written, never deleted on update (wiping them silently
+# disabled Telegram login / the Android /api/app router on old re-installs).
+if [[ -n "$QUICK_TOKEN" ]]; then
+    set_key "WB_QUICK_TOKEN" "$QUICK_TOKEN"
+fi
 if [[ -n "$TELEGRAM_BOT_TOKEN" ]]; then
-    upsert_key "WB_TELEGRAM_BOT_TOKEN" "$TELEGRAM_BOT_TOKEN"
-elif ! $IS_UPDATE; then
+    set_key "WB_TELEGRAM_BOT_TOKEN" "$TELEGRAM_BOT_TOKEN"
+elif ! $ENV_EXISTED; then
     sed -i '/^WB_TELEGRAM_BOT_TOKEN=/d' "$APP_DIR/.env" 2>/dev/null || true
 fi
 if [[ -n "$APP_TOKEN" ]]; then
-    upsert_key "WB_APP_TOKEN" "$APP_TOKEN"
+    set_key "WB_APP_TOKEN" "$APP_TOKEN"
 fi
 # Android App Links verification (mandatory for Android 15+/16 to open the
 # /tginit https callback in the app). add-if-missing keeps a manually tuned
 # fingerprint intact.
 add_if_missing "WB_APP_PACKAGE"     "${APP_PACKAGE:-$(_env_def WB_APP_PACKAGE)}"
 add_if_missing "WB_APP_CERT_SHA256" "${APP_CERT_SHA256:-$(_env_def WB_APP_CERT_SHA256)}"
-upsert_key "WB_DATA_DIR"        "$APP_DIR/data"
-upsert_key "WB_BINARIES_DIR"    "$APP_DIR/binaries"
-upsert_key "WB_DATABASE_PATH"   "$APP_DIR/data/app.db"
+# Storage paths: pin on a fresh install; on an update only fill them in if the
+# running .env somehow lacks them (never repoint an existing install).
+if ! $ENV_EXISTED; then
+    upsert_key "WB_DATA_DIR"      "$APP_DIR/data"
+    upsert_key "WB_BINARIES_DIR"  "$APP_DIR/binaries"
+    upsert_key "WB_DATABASE_PATH" "$APP_DIR/data/app.db"
+else
+    add_if_missing "WB_DATA_DIR"      "$APP_DIR/data"
+    add_if_missing "WB_BINARIES_DIR"  "$APP_DIR/binaries"
+    add_if_missing "WB_DATABASE_PATH" "$APP_DIR/data/app.db"
+fi
+
+# Pull in any brand-new keys shipped in this release's .env.example that the
+# live .env does not have yet — with the template default, commented context
+# skipped. Existing keys are never touched here.
+if [[ -f "$APP_DIR/.env.example" ]]; then
+    NEW_KEYS=0
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+        k="${line%%=*}"
+        grep -qE "^${k}=" "$APP_DIR/.env" && continue
+        printf '%s\n' "$line" >> "$APP_DIR/.env"
+        log "[UPDATE] .env: added new key $k (from .env.example)"
+        NEW_KEYS=$((NEW_KEYS+1))
+    done < "$APP_DIR/.env.example"
+    [[ "$NEW_KEYS" -gt 0 ]] && ok "Added $NEW_KEYS new key(s) from .env.example"
+fi
+
 chmod 600 "$APP_DIR/.env"   # contains the admin password — protect it.
-ok ".env written at $APP_DIR/.env (mode 600; existing tokens preserved)"
+if $ENV_EXISTED; then
+    ok ".env reconciled (existing values kept; only new keys / operator-set values written)"
+else
+    ok ".env written at $APP_DIR/.env (mode 600)"
+fi
 
 # #############################################################################
-# 6. DB init + forced admin password sync
+# 6. DB init + (conditional) admin password sync
+#
+# Schema creation is idempotent (CREATE TABLE IF NOT EXISTS) and the app applies
+# its own column migrations on connect, so this never destroys data.
+# The admin row is only re-synced when SYNC_ADMIN=1 (fresh install, or the
+# operator explicitly passed a new ADMIN_PASSWORD). Otherwise the existing admin
+# credentials are left exactly as they are.
 # #############################################################################
 log "Initializing database (schema)..."
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$APP_DIR"
 
-# Load .env into the subprocess's environment, init the schema, then force the
-# admin row to match WB_ADMIN_PASSWORD. We pass APP_DIR as argv[1] AND insert
-# it on sys.path so `import config` works regardless of cwd.
-sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/python" - "$APP_DIR" <<'PY'
+# argv[1] = APP_DIR, argv[2] = SYNC_ADMIN ("1" resets the admin password hash to
+# WB_ADMIN_PASSWORD; "0" only creates the admin if it does not exist yet).
+sudo -u "$SERVICE_USER" "$APP_DIR/.venv/bin/python" - "$APP_DIR" "$SYNC_ADMIN" <<'PY'
 import asyncio, os, sys
 APP_DIR = sys.argv[1]
+SYNC_ADMIN = (len(sys.argv) > 2 and sys.argv[2] == "1")
 os.chdir(APP_DIR)
 sys.path.insert(0, APP_DIR)
 
@@ -467,26 +550,43 @@ async def main():
     await db.connect()
     uname = config.ADMIN_USERNAME
     phash = hash_password(config.ADMIN_PASSWORD)
-    # UPSERT the admin: create on first run, otherwise overwrite the password
-    # hash + role so the DB always matches .env. This is what makes a password
-    # change in .env actually take effect.
-    await db.execute(
-        """
-        INSERT INTO users (username, password_hash, role, max_concurrent)
-        VALUES (?, ?, 'admin', 3)
-        ON CONFLICT(username) DO UPDATE SET
-            password_hash = excluded.password_hash,
-            role          = 'admin',
-            enabled       = 1
-        """,
-        (uname, phash),
-    )
+    if SYNC_ADMIN:
+        # Create on first run, otherwise overwrite the password hash + role so
+        # the DB matches .env. Only reached on a fresh install or when the
+        # operator explicitly passed a new ADMIN_PASSWORD.
+        await db.execute(
+            """
+            INSERT INTO users (username, password_hash, role, max_concurrent)
+            VALUES (?, ?, 'admin', 3)
+            ON CONFLICT(username) DO UPDATE SET
+                password_hash = excluded.password_hash,
+                role          = 'admin',
+                enabled       = 1
+            """,
+            (uname, phash),
+        )
+        print("  schema ready + admin '%s' password synced" % uname)
+    else:
+        # Update with no explicit password change: never touch an existing
+        # admin row. Only seed one if the DB somehow has none.
+        await db.execute(
+            """
+            INSERT INTO users (username, password_hash, role, max_concurrent)
+            VALUES (?, ?, 'admin', 3)
+            ON CONFLICT(username) DO NOTHING
+            """,
+            (uname, phash),
+        )
+        print("  schema ready + admin '%s' left untouched" % uname)
     await db.close()
-    print("  schema + admin '%s' synced" % uname)
 
 asyncio.run(main())
 PY
-ok "Database ready, admin password synced to .env"
+if [[ "$SYNC_ADMIN" == "1" ]]; then
+    ok "Database ready, admin password synced to .env"
+else
+    ok "Database ready, existing admin credentials preserved"
+fi
 
 # #############################################################################
 # 7. systemd service
@@ -494,13 +594,24 @@ ok "Database ready, admin password synced to .env"
 log "Installing systemd unit..."
 UNIT_SRC="$SCRIPT_DIR/wb-manager.service"
 UNIT_DST="/etc/systemd/system/${SERVICE_NAME}.service"
+UNIT_NEW="$(mktemp)"
 sed -e "s|{{APP_DIR}}|$APP_DIR|g" \
     -e "s|{{SERVICE_USER}}|$SERVICE_USER|g" \
     -e "s|{{APP_HOST}}|$APP_HOST|g" \
     -e "s|{{APP_PORT}}|$APP_PORT|g" \
-    "$UNIT_SRC" > "$UNIT_DST"
-systemctl daemon-reload
+    "$UNIT_SRC" > "$UNIT_NEW"
+if ! cmp -s "$UNIT_NEW" "$UNIT_DST" 2>/dev/null; then
+    install -m0644 "$UNIT_NEW" "$UNIT_DST"
+    systemctl daemon-reload
+    ok "systemd unit updated"
+else
+    ok "systemd unit unchanged"
+fi
+rm -f "$UNIT_NEW"
 systemctl enable "$SERVICE_NAME" >/dev/null 2>&1 || true
+# Plain restart: the unit uses KillMode=process, so ONLY the uvicorn main
+# process is signalled. Running proxy child binaries keep going and the app
+# re-adopts their PIDs on startup (main.py reattach()).
 systemctl restart "$SERVICE_NAME"
 sleep 2
 if systemctl is-active --quiet "$SERVICE_NAME"; then
@@ -668,9 +779,18 @@ fi
 echo "  Proxy:       $PROXY"
 echo
 if $IS_UPDATE; then
-    echo "  NOTE: on UPDATE, database was backed up to /var/backups/${SERVICE_NAME}/"
+    echo "  NOTE: UPDATE mode — non-destructive:"
+    echo "    * database preserved (backup in /var/backups/${SERVICE_NAME}/)"
+    echo "    * .env preserved (only new keys / values you changed were written)"
+    if [[ "$SYNC_ADMIN" == "1" ]]; then
+        echo "    * admin password re-synced (you supplied a new one)"
+    else
+        echo "    * admin password left unchanged"
+    fi
+    echo "    * running proxy instances kept alive across the restart"
 else
-    echo "  NOTE: re-running this installer RESETS the admin password to the one"
-    echo "  shown above / stored in $APP_DIR/.env (by design — see README)."
+    echo "  NOTE: on a FRESH install the admin password is the one shown above /"
+    echo "  stored in $APP_DIR/.env. Later updates never reset it unless you pass"
+    echo "  a new ADMIN_PASSWORD."
 fi
 echo "==================================================="
