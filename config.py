@@ -67,7 +67,10 @@ APP_TOKEN = os.getenv("WB_APP_TOKEN", "")
 APP_PACKAGE = os.getenv("WB_APP_PACKAGE", "cc.cors.connect")
 APP_CERT_SHA256 = os.getenv(
     "WB_APP_CERT_SHA256",
-    "AB:E4:6D:43:49:90:68:5A:91:34:70:69:A7:42:FA:7C:9D:D3:77:2D:80:CF:D1:57:05:4A:4D:15:E9:00:DA:4D",
+    # Rotated 2026-09-11: the previous signing keystore was lost with no
+    # backup (see git history for the incident). tginit / App Links aren't
+    # in active use right now, so this only matters if that flow is revived.
+    "97:01:46:2B:F9:D2:18:62:B2:F9:A1:92:F8:02:B8:99:96:15:89:98:14:16:81:CE:69:57:C3:7A:99:F5:C0:F7",
 )
 # Lifetime of an unauthenticated (temporary) instance created by the Android
 # app, in seconds. This window lets the user complete Telegram authorization
