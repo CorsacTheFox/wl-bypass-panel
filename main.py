@@ -24,6 +24,7 @@ from config import ADMIN_PASSWORD, ADMIN_USERNAME, APP_CERT_SHA256, APP_PACKAGE,
 from db import db
 from process_manager import process_manager
 from remnawave import remnawave_sync
+from vk_relay import vk_relay
 from routers import admin as admin_router
 from routers import app as app_router
 from routers import auth as auth_router
@@ -101,6 +102,8 @@ async def lifespan(app: FastAPI):
     await process_manager.start()
     # Remnawave auto-sync loop (no-op unless enabled in Admin → Remnawave).
     await remnawave_sync.start()
+    # VK relay fallback loop (no-op unless WB_VK_COMMUNITY_TOKEN is set).
+    await vk_relay.start()
     await _reconcile_stale_instances()
     log.info("Started — admin=%s, listening on config HOST/PORT", ADMIN_USERNAME)
     try:
@@ -108,6 +111,7 @@ async def lifespan(app: FastAPI):
     finally:
         log.info("Shutting down: stopping live processes")
         await remnawave_sync.shutdown()
+        await vk_relay.shutdown()
         await process_manager.shutdown()
         await db.close()
 

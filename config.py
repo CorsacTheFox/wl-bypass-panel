@@ -103,6 +103,24 @@ REMNAWAVE_SYNC_INTERVAL_MIN = int(os.getenv("WB_REMNAWAVE_SYNC_INTERVAL", "30"))
 # replay. Telegram recommends keeping this short; 24h matches the session TTL.
 TELEGRAM_INIT_DATA_MAX_AGE = int(os.getenv("WB_TG_INITDATA_MAX_AGE", str(24 * 3600)))
 
+# VK relay fallback: when the app can't reach this server directly (or the
+# Yandex Function proxy) under a carrier whitelist, it can instead fetch a
+# temporary link through the VK Messages API, which stays reachable. This
+# server keeps a fresh link flowing into a private VK dialog (community ->
+# admin account) by periodically spinning up a 5-minute anonymous instance and
+# posting its output_link via messages.send. Empty VK_COMMUNITY_TOKEN disables
+# the whole relay loop (default — opt-in).
+VK_COMMUNITY_TOKEN = os.getenv("WB_VK_COMMUNITY_TOKEN", "")
+# Numeric VK user id of the community admin the link is sent to (must have
+# messaged the community at least once — VK requires that before a community
+# can message a user, even an admin).
+VK_RELAY_PEER_ID = int(os.getenv("WB_VK_RELAY_PEER_ID", "0"))
+VK_API_VERSION = os.getenv("WB_VK_API_VERSION", "5.199")
+# How often a fresh link is generated and pushed to VK. Must stay comfortably
+# under APP_TEMP_TIMEOUT (5 min) so the app never reads a link that already
+# expired.
+VK_RELAY_INTERVAL_SECONDS = int(os.getenv("WB_VK_RELAY_INTERVAL", "180"))
+
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
