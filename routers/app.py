@@ -545,7 +545,7 @@ async def instance_by_link(body: ByLinkIn):
     """
     link = body.output_link.strip()
     row = await db.fetchone(
-        """SELECT id, timeout_at FROM instances
+        """SELECT id, status, timeout_at FROM instances
             WHERE output_link=? AND user_id=1 AND is_quick=1
               AND status IN ('pending','running')
             ORDER BY id DESC LIMIT 1""",
@@ -563,6 +563,8 @@ async def instance_by_link(body: ByLinkIn):
     return {
         "instance_id": instance_id,
         "claim_token": claim_token,
+        # Required by the app's CreateInstanceOut parser (getString).
+        "status": row["status"],
         "output_link": link,
         "temp_expires_at": row["timeout_at"],
     }
