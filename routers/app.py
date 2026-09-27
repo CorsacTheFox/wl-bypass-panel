@@ -56,6 +56,7 @@ from config import (
 from db import db
 from fastapi.security import HTTPAuthorizationCredentials
 from process_manager import process_manager
+from vk_relay import vk_relay
 from remnawave import (
     RemnawaveError,
     get_link_auth_squads,
@@ -158,6 +159,11 @@ class ClaimIn(BaseModel):
     telegram_init_data: str | None = None
     # The claim_token returned when the temp instance was created.
     claim_token: str
+
+
+class ByLinkIn(BaseModel):
+    # The call link the app read from the VK relay dialog.
+    output_link: str
 
 
 class StopIn(BaseModel):
@@ -525,6 +531,43 @@ async def create_temp_instance(
     }
 
 
+@router.post("/instances/by-link")
+async def instance_by_link(body: ByLinkIn):
+    """Resolve a VK-relayed link to its instance so the app can claim it.
+
+    In VK-relay mode the app only has the bare call link. Once it is connected
+    through that call it reaches this API over the tunnel, looks the instance
+    up here, then uses the ordinary ``/claim`` + ``/heartbeat`` flow. Only
+    still-unclaimed relay instances resolve; everything else is 404, so this
+    can't be used to grab a user's already-claimed call.
+
+    Returns ``instance_id`` and a fresh one-time ``claim_token``.
+    """
+    link = body.output_link.strip()
+    row = await db.fetchone(
+        """SELECT id, timeout_at FROM instances
+            WHERE output_link=? AND user_id=1 AND is_quick=1
+              AND status IN ('pending','running')
+            ORDER BY id DESC LIMIT 1""",
+        (link,),
+    )
+    if row is None or not vk_relay.is_relayed(row["id"]):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="instance not found")
+    instance_id = row["id"]
+    # Drop any token minted earlier for this instance: one live claim token.
+    for tok, iid in list(_claim_tokens.items()):
+        if iid == instance_id:
+            _claim_tokens.pop(tok, None)
+    claim_token = _new_claim_token()
+    _claim_tokens[claim_token] = instance_id
+    return {
+        "instance_id": instance_id,
+        "claim_token": claim_token,
+        "output_link": link,
+        "temp_expires_at": row["timeout_at"],
+    }
+
+
 @router.post("/instances/{instance_id}/claim")
 async def claim_instance(
     instance_id: int, body: ClaimIn, session_user: dict | None = Depends(optional_user)
@@ -629,6 +672,8 @@ async def claim_instance(
     new_timeout_at = (_now_utc() + timedelta(seconds=DEFAULT_TIMEOUT_SECONDS)).isoformat()
     await instance_service.claim_to_user(instance_id, user["id"], new_timeout_at, tag)
     await process_manager.reschedule_timeout(instance_id, float(DEFAULT_TIMEOUT_SECONDS))
+    # A claimed VK-relay call must stop being the link handed out via VK.
+    vk_relay.on_claimed(instance_id)
 
     # consume the token so it can't be reused.
     _claim_tokens.pop(body.claim_token, None)

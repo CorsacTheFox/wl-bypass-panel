@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
-from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -28,15 +26,10 @@ from config import (
     APP_TEMP_TIMEOUT,
     VK_API_VERSION,
     VK_COMMUNITY_TOKEN,
-    VK_RELAY_ACTIVE_BYTES,
-    VK_RELAY_CHECK_SECONDS,
-    VK_RELAY_EXTEND_SECONDS,
     VK_RELAY_INTERVAL_SECONDS,
-    VK_RELAY_MAX_LIFETIME_SECONDS,
     VK_RELAY_PEER_ID,
 )
 from db import db
-from process_manager import process_manager
 from services import instance_service, service_registry
 
 log = logging.getLogger("vk_relay")
@@ -90,58 +83,35 @@ async def _vk_send_link(link: str) -> bool:
     return True
 
 
-def _process_group_io(pgid: int) -> int | None:
-    """Sum of rchar+wchar over every process in *pgid* (the binary is spawned
-    with start_new_session, so its whole tree shares the group). rchar/wchar
-    count socket I/O too, which is what we use as the "tunnel is in use"
-    signal. Returns None where /proc isn't available (non-Linux)."""
-    if not os.path.isdir("/proc"):
-        return None
-    total = 0
-    found = False
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/stat") as f:
-                stat = f.read()
-            # pgrp is the 3rd field after the parenthesised comm.
-            if int(stat.rsplit(")", 1)[1].split()[2]) != pgid:
-                continue
-            with open(f"/proc/{entry}/io") as f:
-                for line in f:
-                    if line.startswith(("rchar:", "wchar:")):
-                        total += int(line.split()[1])
-            found = True
-        except (OSError, ValueError, IndexError):
-            continue
-    return total if found else None
-
-
-async def _extend(instance_id: int, seconds: int) -> None:
-    """Same mechanism as the app heartbeat endpoint: push timeout_at out and
-    re-arm the in-process timeout killer."""
-    new_timeout_at = (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
-    await db.execute(
-        "UPDATE instances SET timeout_at=? WHERE id=? AND status IN ('pending','running','stopping')",
-        (new_timeout_at, instance_id),
-    )
-    await process_manager.reschedule_timeout(instance_id, float(seconds))
-
-
 class VkRelayService:
-    """Background loop: spin up a fresh temp instance, push its link to VK,
-    stop the previous one. Mirrors RemnawaveSyncService's start/shutdown shape.
+    """Background loop: spin up a fresh temp instance, push its link to VK.
+    Mirrors RemnawaveSyncService's start/shutdown shape.
+
+    Relayed instances are never extended here. Once the app is connected
+    through one it looks it up by link over the tunnel
+    (``POST /api/app/instances/by-link``), claims it and heartbeats it like
+    any other app instance; unclaimed ones die at their APP_TEMP_TIMEOUT.
+    A claim triggers an immediate rotation so the claimed call's link stops
+    being the one handed out through VK.
     """
 
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._current_instance_id: int | None = None
-        self._keepalive_task: asyncio.Task | None = None
-        # Instances whose link went out via VK and may still carry a live
-        # tunnel: iid -> [pid, last io counter, started monotonic].
-        self._watched: dict[int, list] = {}
+        self._rotate_now = asyncio.Event()
+        # Every instance whose link went out through VK and is still unclaimed.
+        self._relayed: set[int] = set()
+
+    def is_relayed(self, instance_id: int) -> bool:
+        return instance_id in self._relayed
+
+    def on_claimed(self, instance_id: int) -> None:
+        """Called after a relayed instance was claimed by a user."""
+        self._relayed.discard(instance_id)
+        if instance_id == self._current_instance_id:
+            self._current_instance_id = None
+            self._rotate_now.set()
 
     async def start(self) -> None:
         if not is_configured():
@@ -150,23 +120,24 @@ class VkRelayService:
         if self._task is None or self._task.done():
             self._stop.clear()
             self._task = asyncio.create_task(self._run(), name="vk-relay")
-            self._keepalive_task = asyncio.create_task(self._keepalive(), name="vk-relay-keepalive")
             log.info("VK relay service started (interval=%ss)", VK_RELAY_INTERVAL_SECONDS)
 
     async def shutdown(self) -> None:
         self._stop.set()
-        for task in (self._task, self._keepalive_task):
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001 — best-effort stop
-                    pass
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 — best-effort stop
+                pass
         self._task = None
-        self._keepalive_task = None
         await self._stop_current()
-        for iid in list(self._watched):
-            await self._stop_instance(iid)
+        for iid in list(self._relayed):
+            try:
+                await instance_service.stop(user_id=1, instance_id=iid)
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                pass
+        self._relayed.clear()
         log.info("VK relay service stopped")
 
     async def _stop_current(self) -> None:
@@ -179,46 +150,15 @@ class VkRelayService:
         except Exception:  # noqa: BLE001 — best-effort cleanup
             log.exception("VK relay: failed stopping previous instance %s", iid)
 
-    async def _stop_instance(self, iid: int) -> None:
-        self._watched.pop(iid, None)
-        try:
-            await instance_service.stop(user_id=1, instance_id=iid)
-        except Exception:  # noqa: BLE001 — best-effort cleanup
-            log.exception("VK relay: failed stopping instance %s", iid)
-
-    async def _keepalive(self) -> None:
-        """Server-side heartbeat for VK-relayed instances. The app can't
-        heartbeat them (in VK mode it only has the bare link, no instance id
-        or bearer, and usually can't reach this server at all), so we extend
-        them ourselves while their tunnel carries traffic."""
-        loop = asyncio.get_event_loop()
-        while not self._stop.is_set():
-            await asyncio.sleep(VK_RELAY_CHECK_SECONDS)
-            for iid, entry in list(self._watched.items()):
-                try:
-                    pid, last_io, started = entry
-                    row = await db.fetchone("SELECT status FROM instances WHERE id=?", (iid,))
-                    if row is None or row["status"] in ("stopped", "exited", "crashed", "timeout"):
-                        self._watched.pop(iid, None)
-                        continue
-                    io = _process_group_io(pid)
-                    delta = (io - last_io) if (io is not None and last_io is not None) else 0
-                    entry[1] = io
-                    active = delta >= VK_RELAY_ACTIVE_BYTES
-                    log.debug("VK relay: instance %s io delta=%s active=%s", iid, delta, active)
-                    too_old = (
-                        VK_RELAY_MAX_LIFETIME_SECONDS > 0
-                        and loop.time() - started > VK_RELAY_MAX_LIFETIME_SECONDS
-                    )
-                    if active and not too_old:
-                        await _extend(iid, VK_RELAY_EXTEND_SECONDS)
-                    elif iid != self._current_instance_id:
-                        # Retired link and nobody on it anymore — free it now.
-                        log.info("VK relay: instance %s idle, stopping", iid)
-                        await self._stop_instance(iid)
-                    # Idle current link: leave it on its normal 5-min timer.
-                except Exception:  # noqa: BLE001 — the loop must survive anything
-                    log.exception("VK relay keepalive failed for instance %s", iid)
+    async def _prune_relayed(self) -> None:
+        for iid in list(self._relayed):
+            row = await db.fetchone(
+                "SELECT status, is_quick FROM instances WHERE id=?", (iid,)
+            )
+            if row is None or not row["is_quick"] or row["status"] in (
+                "stopped", "exited", "crashed", "timeout"
+            ):
+                self._relayed.discard(iid)
 
     async def _cycle(self) -> None:
         svc = await _resolve_service()
@@ -249,26 +189,27 @@ class VkRelayService:
             except Exception:  # noqa: BLE001
                 pass
             return
-        # New link delivered. The previous one is NOT killed here: a user may
-        # still be tunnelling through it. The keepalive loop stops it once it
-        # goes idle (or lets it hit its own 5-min timeout).
+        # New link delivered. The previous one is left to its own
+        # APP_TEMP_TIMEOUT instead of being stopped: a client that read it
+        # moments ago may still be connecting and about to claim it.
         self._current_instance_id = instance_id
-        row = await db.fetchone("SELECT pid FROM instances WHERE id=?", (instance_id,))
-        pid = row["pid"] if row else None
-        if pid:
-            self._watched[instance_id] = [pid, _process_group_io(pid), asyncio.get_event_loop().time()]
+        self._relayed.add(instance_id)
+        await self._prune_relayed()
         log.info("VK relay: pushed fresh link (instance %s)", instance_id)
 
     async def _run(self) -> None:
         while not self._stop.is_set():
+            self._rotate_now.clear()
             try:
                 await self._cycle()
             except Exception:  # noqa: BLE001 — the loop must survive anything
                 log.exception("VK relay cycle crashed (will retry next interval)")
-            waited = 0.0
-            while waited < VK_RELAY_INTERVAL_SECONDS and not self._stop.is_set():
-                await asyncio.sleep(min(5.0, VK_RELAY_INTERVAL_SECONDS - waited))
-                waited += 5.0
+            try:
+                await asyncio.wait_for(
+                    self._rotate_now.wait(), timeout=VK_RELAY_INTERVAL_SECONDS
+                )
+            except asyncio.TimeoutError:
+                pass
 
 
 vk_relay = VkRelayService()

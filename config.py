@@ -123,15 +123,6 @@ VK_API_VERSION = os.getenv("WB_VK_API_VERSION", "5.199")
 # under APP_TEMP_TIMEOUT (5 min) so the app never reads a link that already
 # expired.
 VK_RELAY_INTERVAL_SECONDS = int(os.getenv("WB_VK_RELAY_INTERVAL", "180"))
-# Server-side keepalive for VK-relayed instances (the app can't heartbeat
-# them). Every CHECK seconds each relayed instance whose process tree moved at
-# least ACTIVE_BYTES of I/O since the last check gets its lifetime pushed to
-# now+EXTEND. Idle retired links are stopped. MAX_LIFETIME (0 = unlimited)
-# is a hard ceiling on how long one relayed link may be kept alive.
-VK_RELAY_CHECK_SECONDS = int(os.getenv("WB_VK_RELAY_CHECK", "60"))
-VK_RELAY_ACTIVE_BYTES = int(os.getenv("WB_VK_RELAY_ACTIVE_BYTES", "65536"))
-VK_RELAY_EXTEND_SECONDS = int(os.getenv("WB_VK_RELAY_EXTEND", "300"))
-VK_RELAY_MAX_LIFETIME_SECONDS = int(os.getenv("WB_VK_RELAY_MAX_LIFETIME", "0"))
 
 
 def ensure_dirs() -> None:
