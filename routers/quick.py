@@ -25,6 +25,7 @@ from services import (
     NotFoundError,
     instance_service,
     service_registry,
+    get_active_service,
     settings_store,
 )
 
@@ -49,6 +50,9 @@ async def _resolve_quick_service():
     if that service no longer exists / is disabled, fall back to the first
     enabled service.
     """
+    forced = await get_active_service()
+    if forced:
+        return forced
     configured_id = await settings_store.get("quick_service_id")
     if configured_id:
         try:

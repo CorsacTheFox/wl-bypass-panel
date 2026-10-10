@@ -75,6 +75,7 @@ from security import (
     verify_app_token,
 )
 from services import (
+    get_active_service,
     ConcurrencyLimitError,
     instance_service,
     settings_store,
@@ -193,6 +194,9 @@ def _new_claim_token() -> str:
 
 async def _resolve_service(service_id: int | None):
     """Resolve the service to launch: explicit id, else the configured quick one."""
+    forced = await get_active_service()
+    if forced:
+        return forced
     if service_id is not None:
         from services import NotFoundError, service_registry
 

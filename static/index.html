@@ -532,6 +532,13 @@
         </p>
         <form id="form-settings" class="space-y-4">
           <div>
+            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Active service (all launches)</label>
+            <select id="set-active-service" class="input-field">
+              <option value="0">— off: each flow uses its own service —</option>
+            </select>
+            <p class="text-[10px] text-gray-600 mt-1">When set, the dashboard, /quick and the Android app all launch this service, ignoring any other choice.</p>
+          </div>
+          <div>
             <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service for quick launch</label>
             <select id="set-quick-service" class="input-field">
               <option value="0">— first enabled service —</option>
@@ -937,6 +944,12 @@ async function refreshSettings() {
         `<option value="${s.id}" ${s.enabled ? '' : 'disabled'}>${s.name}${s.enabled ? '' : ' (disabled)'}</option>`
       ).join('');
     sel.value = String(settings.quick_service_id || 0);
+    const act = $('#set-active-service');
+    act.innerHTML = '<option value="0">— off: each flow uses its own service —</option>' +
+      services.map(s =>
+        `<option value="${s.id}" ${s.enabled ? '' : 'disabled'}>${s.name}${s.enabled ? '' : ' (disabled)'}</option>`
+      ).join('');
+    act.value = String(settings.active_service_id || 0);
     $('#set-quick-max').value = settings.quick_max_concurrent;
   } catch (err) {
     if (err.message !== 'Session expired') console.error('Settings refresh error:', err);
@@ -951,6 +964,7 @@ $('#form-settings').addEventListener('submit', async (e) => {
     await api.request('/api/admin/settings', { method: 'PUT', body: {
       quick_service_id: parseInt($('#set-quick-service').value) || 0,
       quick_max_concurrent: parseInt($('#set-quick-max').value) || 0,
+      active_service_id: parseInt($('#set-active-service').value) || 0,
     }});
     toast('Settings saved');
   } catch (err) {

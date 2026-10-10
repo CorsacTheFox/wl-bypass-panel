@@ -13,6 +13,7 @@ from security import require_client
 from services import (
     ConcurrencyLimitError,
     ForbiddenError,
+    get_active_service,
     NotFoundError,
     instance_service,
     service_registry,
@@ -30,6 +31,9 @@ class StartCallIn(BaseModel):
 async def list_available_services(user=Depends(require_client)):
     """Services a client may launch against (no credentials leaked)."""
     services = await service_registry.list()
+    forced = await get_active_service()
+    if forced:
+        services = [s for s in services if s["id"] == forced["id"]]
     return [
         {"id": s["id"], "name": s["name"], "enabled": bool(s["enabled"])}
         for s in services
@@ -48,9 +52,11 @@ async def list_instances(user=Depends(require_client)):
 
 @router.post("/start", status_code=status.HTTP_201_CREATED)
 async def start_call(body: StartCallIn, user=Depends(require_client)):
+    forced = await get_active_service()
+    service_id = forced["id"] if forced else body.service_id
     try:
         return await instance_service.start(
-            user["id"], body.service_id, body.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
+            user["id"], service_id, body.timeout_seconds or DEFAULT_TIMEOUT_SECONDS
         )
     except ForbiddenError as e:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
