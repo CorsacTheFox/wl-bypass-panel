@@ -527,17 +527,18 @@
       <div class="card p-6 max-w-xl">
         <h2 class="text-white font-semibold text-sm mb-1">Launch Settings</h2>
         <p class="text-xs text-gray-500 mb-5">
-          The service below is used for <b>all</b> launches: dashboard, public
+          The service below is used by the public
           <code class="text-violet-400">/quick</code> page and the Android app.
+          The dashboard always lets you pick any service.
           Changes apply at runtime — no restart needed.
         </p>
         <form id="form-settings" class="space-y-4">
           <div>
-            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service for all launches</label>
+            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service for /quick and Android app</label>
             <select id="set-quick-service" class="input-field">
               <option value="0">— not set: first enabled service —</option>
             </select>
-            <p class="text-[10px] text-gray-600 mt-1">Every new call starts this service; the dashboard selector is limited to it.</p>
+            <p class="text-[10px] text-gray-600 mt-1">Every call started from /quick or the app uses this service.</p>
           </div>
           <div>
             <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max simultaneous quick/app sessions</label>
