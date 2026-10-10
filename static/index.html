@@ -525,28 +525,22 @@
     <!-- ====== SETTINGS SECTION (admin) ====== -->
     <section id="sec-settings" class="hidden anim-fade space-y-5">
       <div class="card p-6 max-w-xl">
-        <h2 class="text-white font-semibold text-sm mb-1">Quick-Launch Settings</h2>
+        <h2 class="text-white font-semibold text-sm mb-1">Launch Settings</h2>
         <p class="text-xs text-gray-500 mb-5">
-          Controls the public <code class="text-violet-400">/quick</code> one-click flow.
-          The selected service and the concurrency cap are applied at runtime — no restart needed.
+          The service below is used for <b>all</b> launches: dashboard, public
+          <code class="text-violet-400">/quick</code> page and the Android app.
+          Changes apply at runtime — no restart needed.
         </p>
         <form id="form-settings" class="space-y-4">
           <div>
-            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Active service (all launches)</label>
-            <select id="set-active-service" class="input-field">
-              <option value="0">— off: each flow uses its own service —</option>
-            </select>
-            <p class="text-[10px] text-gray-600 mt-1">When set, the dashboard, /quick and the Android app all launch this service, ignoring any other choice.</p>
-          </div>
-          <div>
-            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service for quick launch</label>
+            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Service for all launches</label>
             <select id="set-quick-service" class="input-field">
-              <option value="0">— first enabled service —</option>
+              <option value="0">— not set: first enabled service —</option>
             </select>
-            <p class="text-[10px] text-gray-600 mt-1">The service launched by the public /quick page.</p>
+            <p class="text-[10px] text-gray-600 mt-1">Every new call starts this service; the dashboard selector is limited to it.</p>
           </div>
           <div>
-            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max simultaneous quick sessions</label>
+            <label class="block text-xs text-gray-500 mb-1.5 font-medium">Max simultaneous quick/app sessions</label>
             <input id="set-quick-max" type="number" min="0" max="100" class="input-field" value="5" required />
             <p class="text-[10px] text-gray-600 mt-1">Global cap across all anonymous quick callers. 0 disables quick launch.</p>
           </div>
@@ -939,17 +933,11 @@ async function refreshSettings() {
       api.get('/api/admin/services'),
     ]);
     const sel = $('#set-quick-service');
-    sel.innerHTML = '<option value="0">— first enabled service —</option>' +
+    sel.innerHTML = '<option value="0">— not set: first enabled service —</option>' +
       services.map(s =>
         `<option value="${s.id}" ${s.enabled ? '' : 'disabled'}>${s.name}${s.enabled ? '' : ' (disabled)'}</option>`
       ).join('');
     sel.value = String(settings.quick_service_id || 0);
-    const act = $('#set-active-service');
-    act.innerHTML = '<option value="0">— off: each flow uses its own service —</option>' +
-      services.map(s =>
-        `<option value="${s.id}" ${s.enabled ? '' : 'disabled'}>${s.name}${s.enabled ? '' : ' (disabled)'}</option>`
-      ).join('');
-    act.value = String(settings.active_service_id || 0);
     $('#set-quick-max').value = settings.quick_max_concurrent;
   } catch (err) {
     if (err.message !== 'Session expired') console.error('Settings refresh error:', err);
@@ -964,7 +952,6 @@ $('#form-settings').addEventListener('submit', async (e) => {
     await api.request('/api/admin/settings', { method: 'PUT', body: {
       quick_service_id: parseInt($('#set-quick-service').value) || 0,
       quick_max_concurrent: parseInt($('#set-quick-max').value) || 0,
-      active_service_id: parseInt($('#set-active-service').value) || 0,
     }});
     toast('Settings saved');
   } catch (err) {

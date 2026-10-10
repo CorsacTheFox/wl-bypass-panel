@@ -667,9 +667,6 @@ class SettingsStore:
         "quick_service_id": ("WB_QUICK_DEFAULT_SERVICE_ID", int),
         # global cap on simultaneous quick sessions.
         "quick_max_concurrent": ("WB_QUICK_MAX_CONCURRENT", int),
-        # service forced for EVERY launch (dashboard, /quick, Android app);
-        # 0/None = off, each flow picks its own service as before.
-        "active_service_id": ("WB_ACTIVE_SERVICE_ID", int),
     }
 
     async def get_all(self) -> dict:
@@ -704,7 +701,7 @@ class SettingsStore:
             env_val = os.getenv(env_name, "")
             if env_val == "":
                 # per-key built-in defaults
-                if key in ("quick_service_id", "active_service_id"):
+                if key == "quick_service_id":
                     return 0
                 if key == "quick_max_concurrent":
                     return 5
@@ -721,9 +718,9 @@ settings_store = SettingsStore()
 
 
 async def get_active_service():
-    """The globally forced service row, or None when the override is off,
-    the service vanished or it is disabled (callers then use their own logic)."""
-    sid = await settings_store.get("active_service_id")
+    """The service configured in Settings (quick_service_id) for ALL launches, or
+    None when unset (0), vanished or disabled (callers then use their own logic)."""
+    sid = await settings_store.get("quick_service_id")
     if not sid:
         return None
     try:

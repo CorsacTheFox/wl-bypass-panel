@@ -316,12 +316,11 @@ async def overview():
 
 
 # --------------------------------------------------------------------------- #
-# Settings (runtime overrides for the quick-launch flow)
+# Settings (runtime overrides: launch service + quick-session cap)
 # --------------------------------------------------------------------------- #
 class SettingsUpdate(BaseModel):
     quick_service_id: int | None = Field(default=None, ge=0)
     quick_max_concurrent: int | None = Field(default=None, ge=0, le=100)
-    active_service_id: int | None = Field(default=None, ge=0)
 
 
 @router.get("/settings")
