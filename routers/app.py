@@ -252,6 +252,19 @@ def _extract_subscription_token(subscription: str) -> str:
 
 
 async def _resolve_link_user(subscription: str) -> dict:
+    """Resolve + authorize: an ACTIVE subscription link is sufficient proof.
+
+    Owning a valid (ACTIVE, squad-allowed) subscription link grants the app
+    whitelist flow in full — claim + heartbeat past the 5-minute temp window.
+    No separate Telegram-bot authorization is required.
+    """
+    user = await _resolve_link_user_record(subscription)
+    if user["role"] != "admin" and not user.get("can_create_instances"):
+        user = await user_service.update(user["id"], can_create_instances=True)
+    return user
+
+
+async def _resolve_link_user_record(subscription: str) -> dict:
     """Resolve a subscription link to a local user, creating one on the fly.
 
     The token is the subscription-link ``shortUuid``; it is resolved against the
@@ -657,8 +670,9 @@ async def claim_instance(
     # creation privilege. Guests are refused and their temp instance expires at
     # its 5-min TTL.
     if user["role"] != "admin" and not user.get("can_create_instances"):
-        _claim_tokens.pop(body.claim_token, None)
-        await process_manager.stop(instance_id)
+        # Keep the token and the running instance: the client is typically
+        # already connected through it (VK relay) and may retry after a
+        # link-auth refresh; otherwise it simply expires at its temp TTL.
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Instance creation is disabled for this account",
