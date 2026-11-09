@@ -193,10 +193,11 @@ def _new_claim_token() -> str:
 
 
 async def _resolve_service(service_id: int | None):
-    """Resolve the service to launch: explicit id, else the configured quick one."""
-    forced = await get_active_service()
-    if forced:
-        return forced
+    """Resolve the service to launch.
+
+    An explicit ``service_id`` (the user's pick in the app's service list)
+    wins; otherwise the service configured in Settings, else the quick one.
+    """
     if service_id is not None:
         from services import NotFoundError, service_registry
 
@@ -207,6 +208,9 @@ async def _resolve_service(service_id: int | None):
         if not svc["enabled"]:
             raise HTTPException(status_code=400, detail="selected service is disabled")
         return svc
+    forced = await get_active_service()
+    if forced:
+        return forced
     svc = await _resolve_quick_service()
     if svc is None:
         raise HTTPException(status_code=404, detail="no enabled services available")
@@ -397,6 +401,23 @@ async def app_health():
     }
 
 
+@router.get("/services")
+async def list_app_services():
+    """Enabled services the app may offer as "Whitelist bypass (<name>)".
+
+    Only id + name — binaries/credentials never leave the server.
+    ``default_id`` is the service used when the app sends no ``service_id``.
+    """
+    from services import service_registry
+
+    rows = [s for s in await service_registry.list() if s["enabled"]]
+    default = await get_active_service() or await _resolve_quick_service()
+    return {
+        "services": [{"id": s["id"], "name": s["name"]} for s in rows],
+        "default_id": default["id"] if default else None,
+    }
+
+
 @router.post("/instances", status_code=status.HTTP_201_CREATED)
 async def create_temp_instance(
     body: CreateInstanceIn, session_user: dict | None = Depends(optional_user)
@@ -444,6 +465,15 @@ async def create_temp_instance(
         existing = None
         if tag is not None:
             existing = await instance_service.find_active_app_session(int(tag))
+        if (
+            existing is not None
+            and body.service_id is not None
+            and existing.get("service_id") != body.service_id
+        ):
+            # User switched service in the app: drop the old instance and
+            # spawn the requested one instead of reusing.
+            await process_manager.stop(existing["id"])
+            existing = None
         if existing is not None:
             # Reuse: no new process, no new row. Issue a fresh session token so
             # the client can keep heartbeating. The instance keeps its current

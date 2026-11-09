@@ -760,7 +760,7 @@ class InstanceService:
         row, or None.
         """
         row = await db.fetchone(
-            """SELECT i.id, i.user_id, i.status, i.timeout_at, i.output_link, i.is_quick
+            """SELECT i.id, i.user_id, i.service_id, i.status, i.timeout_at, i.output_link, i.is_quick
                  FROM instances i JOIN users u ON u.id = i.user_id
                 WHERE u.telegram_id=? AND i.app_session=?
                   AND i.status IN ('pending','running','stopping')
