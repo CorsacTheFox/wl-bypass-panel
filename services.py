@@ -628,10 +628,20 @@ class BinariesStore:
             target = BINARIES_DIR / name
             if target.exists() and not replace:
                 continue
-            with zf.open(info) as src, open(target, "wb") as dst:
-                dst.write(src.read())
-            # Make executable.
-            target.chmod(0o755)
+            # Write to a temp file and atomically rename over the target:
+            # opening a running executable for writing fails with
+            # ETXTBSY ("Text file busy"), but rename() works and running
+            # instances keep using the old inode.
+            tmp = BINARIES_DIR / f".{name}.uploading"
+            try:
+                with zf.open(info) as src, open(tmp, "wb") as dst:
+                    while chunk := src.read(1024 * 1024):
+                        dst.write(chunk)
+                tmp.chmod(0o755)
+                os.replace(tmp, target)
+            except OSError as e:
+                tmp.unlink(missing_ok=True)
+                raise BinariesError(f"failed to write {name}: {e}") from e
             extracted.append(name)
         return extracted
 

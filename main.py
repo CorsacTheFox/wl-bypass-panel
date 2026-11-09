@@ -5,7 +5,7 @@ Lifespan handles:
   * bootstrap admin (first run only)
   * reconcile any stale 'running' rows from a previous crash
   * start the process manager (reaper loop)
-  * on shutdown: stop all live processes + close DB
+  * on shutdown: detach from live processes (re-adopted on next start) + close DB
 
 The SPA is served from /static and the root path.
 """
@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        log.info("Shutting down: stopping live processes")
+        log.info("Shutting down manager")
         await remnawave_sync.shutdown()
         await vk_relay.shutdown()
         await process_manager.shutdown()

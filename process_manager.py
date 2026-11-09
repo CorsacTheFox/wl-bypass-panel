@@ -177,7 +177,11 @@ class ProcessManager:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reaper_task
             self._reaper_task = None
-        # Cancel all tailers and kill anything still alive.
+        # Cancel all tailers. By default the child binaries are left running
+        # (they live in their own session) so a manager restart/update does
+        # not drop live instances; the next startup re-adopts them via
+        # reattach(). Set WB_KILL_ON_SHUTDOWN=1 to restore the old behaviour.
+        kill = os.getenv("WB_KILL_ON_SHUTDOWN", "0").lower() in ("1", "true", "yes")
         ids = list(self._tracked.keys())
         for iid in ids:
             t = self._tracked[iid]
@@ -185,7 +189,17 @@ class ProcessManager:
                 t.tailer.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await t.tailer
-            await self._kill(iid, reason="shutdown", timeout_status=False)
+            if kill:
+                await self._kill(iid, reason="shutdown", timeout_status=False)
+            else:
+                for task in (t.waiter, t.kill_task):
+                    if task and not task.done():
+                        task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await task
+        if not kill:
+            log.info("Shutdown: left %d instance(s) running for re-adoption", len(ids))
+            self._tracked.clear()
 
     # ------------------------------------------------------------------ #
     # spawn

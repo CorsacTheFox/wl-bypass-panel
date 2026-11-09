@@ -84,6 +84,8 @@
       animation: slideDown 0.25s ease-out;
       max-width: 360px;
     }
+    .upload-progress { width: 100%; height: 6px; margin-top: 6px; border-radius: 3px; background: rgba(0,0,0,0.25); overflow: hidden; }
+    .upload-progress > div { height: 100%; width: 0; background: currentColor; transition: width 0.15s; }
     .toast-ok  { background: #166534; color: #bbf7d0; }
     .toast-err { background: #991b1b; color: #fecaca; }
     /* Scrollbar */
@@ -1250,50 +1252,77 @@ $('#btn-bulk-create').addEventListener('click', () => openBulkCreateModal());
 $('#btn-grant-access').addEventListener('click', () => openGrantAccessModal());
 $('#btn-new-service').addEventListener('click', () => openServiceModal());
 
-/* --- Binaries zip upload (admin) --- */
-$('#btn-upload-binaries').addEventListener('click', () => $('#inp-binaries-zip').click());
-$('#inp-binaries-zip').addEventListener('change', async (e) => {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
+/* --- Zip uploads (admin) with progress bar --- */
+// fetch() has no upload progress events, so use XHR. Shows a persistent
+// toast with a progress bar until the server answers.
+function uploadZipWithProgress(url, file, btn, label) {
+  const t = el('div', { class: 'toast toast-ok' });
+  const text = el('div', { text: '' });
+  const bar = el('div', { class: 'upload-progress' });
+  const fill = el('div');
+  bar.appendChild(fill);
+  t.appendChild(text);
+  t.appendChild(bar);
+  $('#toast-container').appendChild(t);
+  const mb = (n) => (n / 1048576).toFixed(1);
+  const setText = (s) => { text.textContent = s; };
+  setText(`Uploading ${label}: 0 / ${mb(file.size)} MB`);
+  btn.disabled = true;
+
+  const done = () => {
+    btn.disabled = false;
+    setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 0.3s'; setTimeout(() => t.remove(), 300); }, 5000);
+  };
+  const fail = (msg) => {
+    t.className = 'toast toast-err';
+    setText(msg);
+    done();
+  };
+
   const form = new FormData();
   form.append('file', file);
-  try {
-    const res = await fetch('/api/admin/binaries', {
-      method: 'POST',
-      headers: api.token ? { Authorization: 'Bearer ' + api.token } : {},
-      body: form,
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.detail || `upload failed (${res.status})`);
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', url);
+  if (api.token) xhr.setRequestHeader('Authorization', 'Bearer ' + api.token);
+  xhr.upload.onprogress = (ev) => {
+    if (!ev.lengthComputable) return;
+    const pct = Math.round((ev.loaded / ev.total) * 100);
+    fill.style.width = pct + '%';
+    setText(`Uploading ${label}: ${mb(ev.loaded)} / ${mb(ev.total)} MB (${pct}%)`);
+  };
+  xhr.upload.onload = () => {
+    fill.style.width = '100%';
+    setText(`Processing ${label} on server…`);
+  };
+  xhr.onload = () => {
+    let body = {};
+    try { body = JSON.parse(xhr.responseText); } catch (_) {}
+    if (xhr.status < 200 || xhr.status >= 300) {
+      return fail(body.detail || `upload failed (${xhr.status})`);
+    }
     const names = (body.extracted || []).join(', ') || 'nothing new';
-    toast(`Binaries extracted: ${names}`);
-  } catch (err) {
-    toast(err.message, 'err');
-  }
-});
+    setText(`${label} extracted: ${names}`);
+    done();
+  };
+  xhr.onerror = () => fail(`${label} upload failed (network error)`);
+  xhr.ontimeout = () => fail(`${label} upload timed out`);
+  xhr.send(form);
+}
 
-/* --- Cookies zip upload (admin) --- */
-$('#btn-upload-cookies').addEventListener('click', () => $('#inp-cookies-zip').click());
-$('#inp-cookies-zip').addEventListener('change', async (e) => {
+$('#btn-upload-binaries').addEventListener('click', () => $('#inp-binaries-zip').click());
+$('#inp-binaries-zip').addEventListener('change', (e) => {
   const file = e.target.files?.[0];
   e.target.value = '';  // allow re-uploading the same file later
   if (!file) return;
-  const form = new FormData();
-  form.append('file', file);
-  try {
-    const res = await fetch('/api/admin/cookies', {
-      method: 'POST',
-      headers: api.token ? { Authorization: 'Bearer ' + api.token } : {},
-      body: form,   // multipart — do NOT set Content-Type; the browser sets the boundary
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.detail || `upload failed (${res.status})`);
-    const names = (body.extracted || []).join(', ') || 'nothing new';
-    toast(`Cookies extracted: ${names}`);
-  } catch (err) {
-    toast(err.message, 'err');
-  }
+  uploadZipWithProgress('/api/admin/binaries', file, $('#btn-upload-binaries'), 'Binaries');
+});
+
+$('#btn-upload-cookies').addEventListener('click', () => $('#inp-cookies-zip').click());
+$('#inp-cookies-zip').addEventListener('change', (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  uploadZipWithProgress('/api/admin/cookies', file, $('#btn-upload-cookies'), 'Cookies');
 });
 
 function cookiesBasename(path) {
