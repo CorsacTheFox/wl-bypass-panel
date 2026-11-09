@@ -17,13 +17,16 @@ WB_VK_RELAY_PEER_ID to enable.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import random
 
 import httpx
 
 from config import (
     APP_TEMP_TIMEOUT,
+    DATA_DIR,
     VK_API_VERSION,
     VK_COMMUNITY_TOKEN,
     VK_RELAY_INTERVAL_SECONDS,
@@ -83,6 +86,15 @@ async def _vk_send_link(link: str) -> bool:
     return True
 
 
+# Relay bookkeeping survives a manager restart (instances keep running, so
+# their links must stay claimable).
+_STATE_FILE = DATA_DIR / "vk_relay_state.json"
+
+
+def _kill_on_shutdown() -> bool:
+    return os.getenv("WB_KILL_ON_SHUTDOWN", "0").lower() in ("1", "true", "yes")
+
+
 class VkRelayService:
     """Background loop: spin up a fresh temp instance, push its link to VK.
     Mirrors RemnawaveSyncService's start/shutdown shape.
@@ -118,6 +130,7 @@ class VkRelayService:
             log.info("VK relay disabled (WB_VK_COMMUNITY_TOKEN / WB_VK_RELAY_PEER_ID not set)")
             return
         if self._task is None or self._task.done():
+            await self._load_state()
             self._stop.clear()
             self._task = asyncio.create_task(self._run(), name="vk-relay")
             log.info("VK relay service started (interval=%ss)", VK_RELAY_INTERVAL_SECONDS)
@@ -131,6 +144,14 @@ class VkRelayService:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 — best-effort stop
                 pass
         self._task = None
+        if not _kill_on_shutdown():
+            # Leave relayed instances running (process_manager re-adopts
+            # them on next start) and remember them so links stay claimable.
+            self._save_state()
+            self._relayed.clear()
+            self._current_instance_id = None
+            log.info("VK relay service stopped (instances left running)")
+            return
         await self._stop_current()
         for iid in list(self._relayed):
             try:
@@ -138,7 +159,32 @@ class VkRelayService:
             except Exception:  # noqa: BLE001 — best-effort cleanup
                 pass
         self._relayed.clear()
+        self._save_state()
         log.info("VK relay service stopped")
+
+    def _save_state(self) -> None:
+        try:
+            _STATE_FILE.write_text(json.dumps({
+                "current": self._current_instance_id,
+                "relayed": sorted(self._relayed),
+            }))
+        except OSError:
+            log.exception("VK relay: failed saving state")
+
+    async def _load_state(self) -> None:
+        try:
+            data = json.loads(_STATE_FILE.read_text())
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            log.exception("VK relay: failed loading state")
+            return
+        self._relayed = {int(i) for i in data.get("relayed", [])}
+        cur = data.get("current")
+        await self._prune_relayed()
+        self._current_instance_id = cur if cur in self._relayed else None
+        if self._relayed:
+            log.info("VK relay: restored %d relayed instance(s)", len(self._relayed))
 
     async def _stop_current(self) -> None:
         iid = self._current_instance_id
